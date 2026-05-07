@@ -47,6 +47,57 @@ The server provides typed tools for the most common Basecamp operations:
 - **Project overview** — `get_project_overview`
 - **Escape hatch** — `basecamp_run` (run any CLI command not covered above)
 
+## Claude Code: skip permission prompts (optional)
+
+If you use this server with Claude Code and want to stop being prompted for every Basecamp tool call, add the tools to your allowlist in `~/.claude/settings.json`:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "mcp__basecamp__add_comment",
+      "mcp__basecamp__assign_todo",
+      "mcp__basecamp__auth_status",
+      "mcp__basecamp__basecamp_run",
+      "mcp__basecamp__complete_todo",
+      "mcp__basecamp__create_card",
+      "mcp__basecamp__create_message",
+      "mcp__basecamp__create_todo",
+      "mcp__basecamp__create_todolist",
+      "mcp__basecamp__get_assigned_todos",
+      "mcp__basecamp__get_assignments",
+      "mcp__basecamp__get_me",
+      "mcp__basecamp__get_overdue_todos",
+      "mcp__basecamp__get_project_overview",
+      "mcp__basecamp__get_schedule",
+      "mcp__basecamp__get_timeline",
+      "mcp__basecamp__list_card_columns",
+      "mcp__basecamp__list_cards",
+      "mcp__basecamp__list_chat_messages",
+      "mcp__basecamp__list_comments",
+      "mcp__basecamp__list_messages",
+      "mcp__basecamp__list_notifications",
+      "mcp__basecamp__list_people",
+      "mcp__basecamp__list_projects",
+      "mcp__basecamp__list_schedule_entries",
+      "mcp__basecamp__list_todolists",
+      "mcp__basecamp__list_todos",
+      "mcp__basecamp__mark_notification_read",
+      "mcp__basecamp__move_card",
+      "mcp__basecamp__parse_url",
+      "mcp__basecamp__post_chat_message",
+      "mcp__basecamp__reopen_todo",
+      "mcp__basecamp__search",
+      "mcp__basecamp__show_card",
+      "mcp__basecamp__show_message",
+      "mcp__basecamp__show_project",
+      "mcp__basecamp__show_todo",
+      "mcp__basecamp__update_todo"
+    ]
+  }
+}
+```
+
 ## Environment
 
 | Variable | Default | Description |
