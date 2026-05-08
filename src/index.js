@@ -477,7 +477,19 @@ addTool("list_comments", "List comments on a Basecamp recording (todo, message, 
   async ({ id, project }) => {
     const args = ["comments", "list", id];
     if (project) args.push("--in", project);
-    return ok(await runBasecamp(args));
+    const raw = await runBasecamp(args);
+    try {
+      const envelope = JSON.parse(raw);
+      if (envelope.ok && (envelope.data == null || (Array.isArray(envelope.data) && envelope.data.length === 0))) {
+        try {
+          const check = JSON.parse(await runBasecamp(["comments", "show", id]));
+          if (check.ok && check.data?.type === "Comment") {
+            return fail(`${id} is a comment ID, not a recording. Comments are flat — use show_comment to fetch it and find the parent recording.`);
+          }
+        } catch (_) { /* not a comment, genuinely empty */ }
+      }
+    } catch (_) { /* non-JSON response, return as-is */ }
+    return ok(raw);
   }
 );
 
@@ -560,9 +572,42 @@ addTool("get_assigned_todos",
 
 addTool("get_overdue_todos",
   "Get overdue todos across all projects and all assignees (not filtered to the current user). " +
-  "For your own overdue todos only, use get_assignments with scope='overdue' instead.",
-  {},
-  async () => ok(await runBasecamp(["reports", "overdue"]))
+  "For your own overdue todos only, use get_assignments with scope='overdue' instead. " +
+  "Use assignee to filter by person (name, ID, or 'me'), and project to scope to one project.",
+  {
+    project: z.string().optional().describe("Project ID or name"),
+    assignee: z.string().optional().describe("Filter by assignee: name, ID, or 'me'"),
+  },
+  async ({ project, assignee }) => {
+    const args = ["reports", "overdue"];
+    if (project) args.push("--project", project);
+    const raw = await runBasecamp(args);
+    if (!assignee) return ok(raw);
+
+    let matchId = null;
+    if (assignee === "me") {
+      const me = JSON.parse(await runBasecamp(["me"]));
+      matchId = String((me.data || me).id);
+    }
+
+    const envelope = JSON.parse(raw);
+    const data = envelope.data || envelope;
+    const filtered = {};
+    for (const [key, todos] of Object.entries(data)) {
+      if (!Array.isArray(todos)) { filtered[key] = todos; continue; }
+      filtered[key] = todos.filter(t =>
+        (t.assignees || []).some(a =>
+          (matchId && String(a.id) === matchId) ||
+          (!matchId && (
+            String(a.id) === String(assignee) ||
+            (a.name || "").toLowerCase().includes(assignee.toLowerCase()) ||
+            a.email_address === assignee
+          ))
+        )
+      );
+    }
+    return ok(JSON.stringify({ ...envelope, data: filtered }, null, 2));
+  }
 );
 
 addTool("get_schedule",
@@ -613,18 +658,21 @@ addTool("search", "Full-text search across all Basecamp content",
 // ── TIMELINE ─────────────────────────────────────────────────────────────────
 
 addTool("get_timeline",
-  "Get recent activity. Omit project for account-wide timeline.",
+  "Get recent activity. Omit project for account-wide timeline. " +
+  "Default returns up to 100 events; use all=true to fetch everything (slow on large accounts).",
   {
     project: z.string().optional().describe("Project ID or name (omit for account-wide)"),
     person: z.string().optional().describe("Person ID (filter to their activity)"),
     me: z.boolean().optional().describe("Show only your own activity"),
     limit: z.number().int().optional().describe("Max results (default: 100)"),
+    all: z.boolean().optional().describe("Fetch all events (may be slow on large accounts)"),
   },
-  async ({ project, person, me, limit }) => {
+  async ({ project, person, me, limit, all }) => {
     const args = me ? ["timeline", "me"] : ["timeline"];
     if (project) args.push("--in", project);
     if (person) args.push("--person", person);
-    if (limit != null) args.push("--limit", String(limit));
+    if (all) args.push("--all");
+    else if (limit != null) args.push("--limit", String(limit));
     return ok(await runBasecamp(args));
   }
 );
