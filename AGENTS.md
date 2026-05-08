@@ -1,6 +1,17 @@
 # basecamp-cli-mcp
 
-A local MCP server that wraps the official [Basecamp CLI](https://github.com/basecamp/basecamp-cli) to give Claude Desktop (and Cowork) the same Basecamp functionality as the [Claude Code basecamp skill](https://github.com/basecamp/skills).
+**basecamp-cli-mcp** is a local MCP server that wraps the [Basecamp CLI](https://github.com/basecamp/basecamp-cli) so that Claude Desktop and Cowork can interact with Basecamp via MCP tools.
+
+**The Basecamp skill** is the official skill that ships inside the same CLI repo (`skills/`). It guides Claude Code to use the CLI directly via bash — no MCP involved. Claude Code has terminal access; Claude Desktop and Cowork do not, which is why basecamp-cli-mcp exists.
+
+## Scope policy
+
+The baseline is parity with the Basecamp skill. Any tool that goes beyond that baseline is an **explicit extension** — a deliberate decision because the CLI supports it and it is useful in agent workflows. Current explicit extensions:
+
+- **Card update** (`update_card`) — the official skill has create/move but not update
+- **Card steps** (`list_steps`, `create_step`, `complete_step`, `uncomplete_step`, `update_step`, `move_step`, `delete_step`) — steps are structurally identical to todos and used for assigning subtasks on cards
+
+Do not add extensions opportunistically. If the CLI supports something the official skill does not, make a deliberate decision before adding it.
 
 ## Architecture
 
@@ -45,6 +56,14 @@ Always prefer the named tools over `basecamp_run`. The routing table:
 | List cards | `list_cards` |
 | Create a card | `create_card` |
 | Move a card | `move_card` |
+| Update a card | `update_card` |
+| List steps on a card | `list_steps` |
+| Create a step | `create_step` |
+| Complete a step | `complete_step` |
+| Uncomplete a step | `uncomplete_step` |
+| Update a step | `update_step` |
+| Move a step | `move_step` |
+| Delete a step | `delete_step` |
 | Full project overview | `get_project_overview` |
 | Schedule (single project) | `list_schedule_entries` |
 | Schedule (cross-project) | `get_schedule` |
@@ -55,7 +74,7 @@ Always prefer the named tools over `basecamp_run`. The routing table:
 
 ### `basecamp_run` — last resort only
 
-Use `basecamp_run` only for operations not covered by a specific tool: `gauges`, `lineup`, `check-ins`, `webhooks`, `subscriptions`, `templates`, cross-project `recordings`, `files`/`uploads`, `accounts`, schedule create/update, todos position/sweep, cards update/steps, messages pin/publish.
+Use `basecamp_run` only for operations not covered by a specific tool: `gauges`, `lineup`, `check-ins`, `webhooks`, `subscriptions`, `templates`, cross-project `recordings`, `files`/`uploads`, `accounts`, schedule create/update, todos position/sweep, messages pin/publish.
 
 Do NOT pass `--json` or `--md` yourself — they are appended automatically.
 
@@ -91,7 +110,7 @@ The CLI supports `basecamp <cmd> --agent --help` to get structured JSON describi
 ## References
 
 - [Basecamp CLI](https://github.com/basecamp/basecamp-cli) — the official CLI this server wraps
-- [Claude Code basecamp skill](https://github.com/basecamp/skills) — the skill this project mirrors for Claude Desktop
+- [Basecamp skill](https://github.com/basecamp/basecamp-cli/tree/main/skills) — the official skill this project mirrors, ships inside the CLI repo
 
 ## Source
 

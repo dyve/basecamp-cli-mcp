@@ -313,6 +313,141 @@ addTool("move_card", "Move a card to a different column (optionally to on-hold s
   }
 );
 
+addTool("update_card", "Update an existing card (title, body, assignee, due date)",
+  {
+    id: z.string().describe("Card ID or Basecamp URL"),
+    title: z.string().optional().describe("New title"),
+    body: z.string().optional().describe("New body/description"),
+    assignee: z.string().optional().describe("Assignee ID or name"),
+    due: z.string().optional().describe("Due date (natural language or YYYY-MM-DD)"),
+    project: z.string().optional().describe("Project ID or name"),
+    card_table: z.string().optional().describe("Card table ID (required if project has multiple tables)"),
+  },
+  async ({ id, title, body, assignee, due, project, card_table }) => {
+    const args = ["cards", "update", id];
+    if (title) args.push("--title", title);
+    if (body) args.push("--body", body);
+    if (assignee) args.push("--assignee", assignee);
+    if (due) args.push("--due", due);
+    if (project) args.push("--in", project);
+    if (card_table) args.push("--card-table", card_table);
+    return ok(await runBasecamp(args));
+  }
+);
+
+// ── CARD STEPS ────────────────────────────────────────────────────────────────
+
+addTool("list_steps", "List all steps (checklist items) on a card",
+  {
+    card: z.string().describe("Card ID or Basecamp URL"),
+    project: z.string().optional().describe("Project ID or name"),
+    card_table: z.string().optional().describe("Card table ID (required if project has multiple tables)"),
+  },
+  async ({ card, project, card_table }) => {
+    const args = ["cards", "steps", card];
+    if (project) args.push("--in", project);
+    if (card_table) args.push("--card-table", card_table);
+    return ok(await runBasecamp(args));
+  }
+);
+
+addTool("create_step", "Add a new step (checklist item) to a card",
+  {
+    title: z.string().describe("Step title"),
+    card: z.string().describe("Card ID"),
+    assignees: z.string().optional().describe("Assignee IDs or names (comma-separated)"),
+    due: z.string().optional().describe("Due date (natural language or YYYY-MM-DD)"),
+    project: z.string().optional().describe("Project ID or name"),
+    card_table: z.string().optional().describe("Card table ID (required if project has multiple tables)"),
+  },
+  async ({ title, card, assignees, due, project, card_table }) => {
+    const args = ["cards", "step", "create", title, "--card", card];
+    if (assignees) args.push("--assignees", assignees);
+    if (due) args.push("--due", due);
+    if (project) args.push("--in", project);
+    if (card_table) args.push("--card-table", card_table);
+    return ok(await runBasecamp(args));
+  }
+);
+
+addTool("complete_step", "Mark a card step as completed",
+  {
+    id: z.string().describe("Step ID or Basecamp URL"),
+    project: z.string().optional().describe("Project ID or name"),
+    card_table: z.string().optional().describe("Card table ID (required if project has multiple tables)"),
+  },
+  async ({ id, project, card_table }) => {
+    const args = ["cards", "step", "complete", id];
+    if (project) args.push("--in", project);
+    if (card_table) args.push("--card-table", card_table);
+    return ok(await runBasecamp(args));
+  }
+);
+
+addTool("uncomplete_step", "Mark a card step as not completed",
+  {
+    id: z.string().describe("Step ID or Basecamp URL"),
+    project: z.string().optional().describe("Project ID or name"),
+    card_table: z.string().optional().describe("Card table ID (required if project has multiple tables)"),
+  },
+  async ({ id, project, card_table }) => {
+    const args = ["cards", "step", "uncomplete", id];
+    if (project) args.push("--in", project);
+    if (card_table) args.push("--card-table", card_table);
+    return ok(await runBasecamp(args));
+  }
+);
+
+addTool("update_step", "Update a card step (title, assignees, due date)",
+  {
+    id: z.string().describe("Step ID or Basecamp URL"),
+    title: z.string().optional().describe("New title"),
+    assignees: z.string().optional().describe("Assignee IDs or names (comma-separated)"),
+    due: z.string().optional().describe("Due date (natural language or YYYY-MM-DD)"),
+    project: z.string().optional().describe("Project ID or name"),
+    card_table: z.string().optional().describe("Card table ID (required if project has multiple tables)"),
+  },
+  async ({ id, title, assignees, due, project, card_table }) => {
+    const args = ["cards", "step", "update", id];
+    if (title) args.push(title);
+    if (assignees) args.push("--assignees", assignees);
+    if (due) args.push("--due", due);
+    if (project) args.push("--in", project);
+    if (card_table) args.push("--card-table", card_table);
+    return ok(await runBasecamp(args));
+  }
+);
+
+addTool("move_step", "Reposition a step within a card (0-indexed)",
+  {
+    id: z.string().describe("Step ID or Basecamp URL"),
+    card: z.string().describe("Card ID (required)"),
+    position: z.number().int().describe("Target position (0-indexed)"),
+    project: z.string().optional().describe("Project ID or name"),
+    card_table: z.string().optional().describe("Card table ID (required if project has multiple tables)"),
+  },
+  async ({ id, card, position, project, card_table }) => {
+    const args = ["cards", "step", "move", id, "--card", card, "--position", String(position)];
+    if (project) args.push("--in", project);
+    if (card_table) args.push("--card-table", card_table);
+    return ok(await runBasecamp(args));
+  }
+);
+
+addTool("delete_step", "Permanently delete a step from a card",
+  {
+    id: z.string().describe("Step ID or Basecamp URL"),
+    project: z.string().optional().describe("Project ID or name"),
+    card_table: z.string().optional().describe("Card table ID (required if project has multiple tables)"),
+  },
+  async ({ id, project, card_table }) => {
+    const args = ["cards", "step", "delete", id];
+    if (project) args.push("--in", project);
+    if (card_table) args.push("--card-table", card_table);
+    return ok(await runBasecamp(args));
+  }
+);
+
 // ── COMMENTS ─────────────────────────────────────────────────────────────────
 
 addTool("list_comments", "List comments on a Basecamp recording (todo, message, card, etc.)",
@@ -525,7 +660,7 @@ addTool("basecamp_run",
   "LAST RESORT: run any basecamp CLI command not covered by a specific tool. " +
   "Always prefer the specific tools above. Only use this for: gauges, lineup, check-ins, " +
   "webhooks, subscriptions, templates, recordings (cross-project), files/uploads, " +
-  "accounts, schedule create/update, todos position/sweep, cards update/steps, messages pin/publish. " +
+  "accounts, schedule create/update, todos position/sweep, messages pin/publish." +
   "Do NOT pass --json or --md yourself — they are appended automatically. " +
   "Pass args as an array, e.g. [\"gauges\", \"list\"] or [\"checkins\", \"questions\", \"--in\", \"MyProject\"].",
   {
