@@ -481,6 +481,13 @@ addTool("list_comments", "List comments on a Basecamp recording (todo, message, 
   }
 );
 
+addTool("show_comment",
+  "Show a single comment by ID. Use this when you have a comment ID (e.g. from a timeline event or notification) " +
+  "but do not yet know the parent recording. Returns the full comment object including parent id, type, and URL.",
+  { id: z.string().describe("Comment ID") },
+  async ({ id }) => ok(await runBasecamp(["comments", "show", id]))
+);
+
 addTool("add_comment",
   "Add a comment to any Basecamp item. Comments are flat — always comment on the parent recording, not on a comment ID. " +
   "Supports Markdown and @mentions. For @mentions use [@Name](mention:SGID) — requires no extra API calls.",
@@ -552,7 +559,8 @@ addTool("get_assigned_todos",
 );
 
 addTool("get_overdue_todos",
-  "Get overdue todos across all projects. Prefer this over list_todos with --overdue for cross-project queries.",
+  "Get overdue todos across all projects and all assignees (not filtered to the current user). " +
+  "For your own overdue todos only, use get_assignments with scope='overdue' instead.",
   {},
   async () => ok(await runBasecamp(["reports", "overdue"]))
 );
