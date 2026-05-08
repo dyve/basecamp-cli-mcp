@@ -36,7 +36,7 @@ The server provides typed tools for the most common Basecamp operations:
 - **Messages** — `list_messages`, `show_message`, `create_message`
 - **Cards** — `list_cards`, `list_card_columns`, `show_card`, `create_card`, `move_card`, `update_card`
 - **Card steps** — `list_steps`, `create_step`, `complete_step`, `uncomplete_step`, `update_step`, `move_step`, `delete_step`
-- **Comments** — `add_comment`
+- **Comments** — `list_comments`, `add_comment`
 - **Chat** — `list_chat_messages`, `post_chat_message`
 - **Assignments & reports** — `get_assignments`, `get_assigned_todos`, `get_overdue_todos`, `get_schedule`
 - **Notifications** — `list_notifications`, `mark_notification_read`

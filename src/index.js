@@ -76,6 +76,16 @@ function addTool(name, description, schema, handler) {
   });
 }
 
+// ── HELPERS ───────────────────────────────────────────────────────────────────
+
+// Extracts { projectId, cardId } from a Basecamp card URL, or null if not a URL.
+// URL format: https://3.basecamp.com/{account}/buckets/{project}/card_tables/cards/{card}
+function parseCardUrl(value) {
+  const m = value.match(/^https?:\/\/3\.basecamp\.com\/\d+\/buckets\/(\d+)\/card_tables\/cards\/(\d+)/);
+  if (!m) return null;
+  return { projectId: m[1], cardId: m[2] };
+}
+
 // ── URL PARSING ──────────────────────────────────────────────────────────────
 
 addTool("parse_url",
@@ -344,8 +354,11 @@ addTool("list_steps", "List all steps (checklist items) on a card",
     card_table: z.string().optional().describe("Card table ID (required if project has multiple tables)"),
   },
   async ({ card, project, card_table }) => {
-    const args = ["cards", "steps", card];
-    if (project) args.push("--in", project);
+    const parsed = parseCardUrl(card);
+    const cardId = parsed ? parsed.cardId : card;
+    const resolvedProject = project ?? parsed?.projectId;
+    const args = ["cards", "steps", cardId];
+    if (resolvedProject) args.push("--in", resolvedProject);
     if (card_table) args.push("--card-table", card_table);
     return ok(await runBasecamp(args));
   }
@@ -354,17 +367,20 @@ addTool("list_steps", "List all steps (checklist items) on a card",
 addTool("create_step", "Add a new step (checklist item) to a card",
   {
     title: z.string().describe("Step title"),
-    card: z.string().describe("Card ID"),
+    card: z.string().describe("Card ID or Basecamp URL"),
     assignees: z.string().optional().describe("Assignee IDs or names (comma-separated)"),
     due: z.string().optional().describe("Due date (natural language or YYYY-MM-DD)"),
     project: z.string().optional().describe("Project ID or name"),
     card_table: z.string().optional().describe("Card table ID (required if project has multiple tables)"),
   },
   async ({ title, card, assignees, due, project, card_table }) => {
-    const args = ["cards", "step", "create", title, "--card", card];
+    const parsed = parseCardUrl(card);
+    const cardId = parsed ? parsed.cardId : card;
+    const resolvedProject = project ?? parsed?.projectId;
+    const args = ["cards", "step", "create", title, "--card", cardId];
     if (assignees) args.push("--assignees", assignees);
     if (due) args.push("--due", due);
-    if (project) args.push("--in", project);
+    if (resolvedProject) args.push("--in", resolvedProject);
     if (card_table) args.push("--card-table", card_table);
     return ok(await runBasecamp(args));
   }
@@ -421,14 +437,17 @@ addTool("update_step", "Update a card step (title, assignees, due date)",
 addTool("move_step", "Reposition a step within a card (0-indexed)",
   {
     id: z.string().describe("Step ID or Basecamp URL"),
-    card: z.string().describe("Card ID (required)"),
+    card: z.string().describe("Card ID or Basecamp URL (required)"),
     position: z.number().int().describe("Target position (0-indexed)"),
     project: z.string().optional().describe("Project ID or name"),
     card_table: z.string().optional().describe("Card table ID (required if project has multiple tables)"),
   },
   async ({ id, card, position, project, card_table }) => {
-    const args = ["cards", "step", "move", id, "--card", card, "--position", String(position)];
-    if (project) args.push("--in", project);
+    const parsed = parseCardUrl(card);
+    const cardId = parsed ? parsed.cardId : card;
+    const resolvedProject = project ?? parsed?.projectId;
+    const args = ["cards", "step", "move", id, "--card", cardId, "--position", String(position)];
+    if (resolvedProject) args.push("--in", resolvedProject);
     if (card_table) args.push("--card-table", card_table);
     return ok(await runBasecamp(args));
   }
@@ -644,7 +663,7 @@ addTool("get_project_overview",
 
     const section = (title, result) => result.status === "fulfilled"
       ? `## ${title}\n\n${result.value}`
-      : `## ${title}\n\n_Error: ${result.reason?.stderr?.trim() || result.reason?.message}_`;
+      : `## ${title}\n\n_Error: ${result.reason?.stderr?.trim() || result.reason?.stdout?.trim() || result.reason?.message}_`;
 
     return ok([
       section("Open Todos", todos),

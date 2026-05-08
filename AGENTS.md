@@ -93,7 +93,7 @@ Do NOT pass `--json` or `--md` yourself — they are appended automatically.
 
 ### Basecamp URLs
 
-Always call `parse_url` first when you receive a Basecamp URL, before passing IDs to any other tool. Never pass a raw URL where an ID is expected — except to tools that explicitly accept URLs (e.g. `show_todo`, `show_card`).
+Most tools accept either an ID or a Basecamp URL for their primary ID parameter — check the parameter description. Still call `parse_url` first when you receive a URL you haven't already parsed: it extracts `project_id` and other context you will typically need for other parameters.
 
 ### @mentions
 
