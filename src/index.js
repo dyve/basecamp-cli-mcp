@@ -86,6 +86,47 @@ function parseCardUrl(value) {
   return { projectId: m[1], cardId: m[2] };
 }
 
+// Wraps a CLI JSON list response with pagination metadata.
+// The CLI envelope is { ok, data: [...], summary } — no native has_more field.
+// has_more logic:
+//   all=true or count=0  → false (definitely done)
+//   limit set, count < limit → false (got fewer than asked)
+//   limit set, count >= limit → true (more likely exist)
+//   no limit → null (CLI default applied; completeness unknown)
+function wrapPaginated(raw, { all = false, limit = null } = {}) {
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch { return raw; }
+  let items;
+  if (Array.isArray(parsed.data)) {
+    items = parsed.data;
+  } else if (Array.isArray(parsed)) {
+    items = parsed;
+  } else if (parsed.ok === true && !("data" in parsed)) {
+    // CLI omits data field when list is empty
+    items = [];
+  } else {
+    return raw; // non-list (show commands, nested data structures)
+  }
+  const count = items.length;
+  let has_more;
+  if (all || count === 0) {
+    has_more = false;
+  } else if (limit != null) {
+    has_more = count >= limit;
+  } else {
+    has_more = null;
+  }
+  return JSON.stringify({
+    items,
+    count,
+    page: {
+      has_more,
+      ...(has_more === null && { note: "Results capped at CLI default. Pass all=true to fetch exhaustively." }),
+      ...(has_more === true && { next_page: "increment the page param by 1" }),
+    },
+  }, null, 2);
+}
+
 // ── URL PARSING ──────────────────────────────────────────────────────────────
 
 addTool("parse_url",
@@ -110,7 +151,7 @@ addTool("show_project", "Show details of a Basecamp project",
 // ── TODOS ────────────────────────────────────────────────────────────────────
 
 addTool("list_todos",
-  "List todos in a project or todolist. " +
+  "List todos in a project or todolist. Returns paginated results — check page.has_more before claiming completeness. " +
   "For cross-project work overview, prefer get_assignments (your own) or get_assigned_todos (any person). " +
   "For overdue todos across all projects, prefer get_overdue_todos.",
   {
@@ -119,10 +160,11 @@ addTool("list_todos",
     status: z.enum(["completed", "incomplete"]).optional().describe("Filter by status"),
     assignee: z.string().optional().describe("Filter by assignee name, ID, or 'me'"),
     overdue: z.boolean().optional().describe("Only show overdue todos"),
-    all: z.boolean().optional().describe("Fetch all (no limit)"),
+    all: z.boolean().optional().describe("Fetch all (no limit); sets page.has_more=false"),
     limit: z.number().int().optional().describe("Max results"),
+    page: z.number().int().optional().describe("Page number (use with limit for manual pagination)"),
   },
-  async ({ project, list, status, assignee, overdue, all, limit }) => {
+  async ({ project, list, status, assignee, overdue, all, limit, page }) => {
     const args = ["todos", "list"];
     if (project) args.push("--in", project);
     if (list) args.push("--list", list);
@@ -131,7 +173,8 @@ addTool("list_todos",
     if (overdue) args.push("--overdue");
     if (all) args.push("--all");
     else if (limit != null) args.push("--limit", String(limit));
-    return ok(await runBasecamp(args));
+    if (page != null) args.push("--page", String(page));
+    return ok(wrapPaginated(await runBasecamp(args), { all, limit }));
   }
 );
 
@@ -204,9 +247,10 @@ addTool("assign_todo",
 
 // ── TODOLISTS ────────────────────────────────────────────────────────────────
 
-addTool("list_todolists", "List all todolists in a project",
+addTool("list_todolists", "List all todolists in a project. Returns paginated results — check page.has_more.",
   { project: z.string().describe("Project ID or name") },
-  async ({ project }) => ok(await runBasecamp(["todolists", "list", "--in", project]))
+  async ({ project }) =>
+    ok(wrapPaginated(await runBasecamp(["todolists", "list", "--in", project])))
 );
 
 addTool("create_todolist", "Create a new todolist in a project",
@@ -224,14 +268,34 @@ addTool("create_todolist", "Create a new todolist in a project",
 
 // ── MESSAGES ──────────────────────────────────────────────────────────────────
 
-addTool("list_messages", "List messages on a project's message board",
-  { project: z.string().describe("Project ID or name") },
-  async ({ project }) => ok(await runBasecamp(["messages", "list", "--in", project]))
+addTool("list_messages",
+  "List posts on a project's MESSAGE BOARD (structured posts with a subject/title). NOT chat. " +
+  "For Campfire real-time chat messages, use list_chat_messages. " +
+  "Returns paginated results — check page.has_more before claiming completeness.",
+  {
+    project: z.string().describe("Project ID or name"),
+    all: z.boolean().optional().describe("Fetch all messages; sets page.has_more=false"),
+    limit: z.number().int().optional().describe("Max results"),
+    page: z.number().int().optional().describe("Page number"),
+  },
+  async ({ project, all, limit, page }) => {
+    const args = ["messages", "list", "--in", project];
+    if (all) args.push("--all");
+    else if (limit != null) args.push("--limit", String(limit));
+    if (page != null) args.push("--page", String(page));
+    return ok(wrapPaginated(await runBasecamp(args), { all, limit }));
+  }
 );
 
-addTool("show_message", "Show a specific message",
-  { id: z.string().describe("Message ID or Basecamp URL") },
-  async ({ id }) => ok(await runBasecamp(["messages", "show", id]))
+addTool("show_message",
+  "Show a message board post (subject + body). NOT a chat message or comment. " +
+  "Use markdown=true for cleaner rendering of rich-text bodies. " +
+  "Replies are not included — use list_comments to fetch them separately.",
+  {
+    id: z.string().describe("Message ID or Basecamp URL"),
+    markdown: z.boolean().optional().describe("Return Markdown-formatted output instead of JSON"),
+  },
+  async ({ id, markdown }) => ok(await runBasecamp(["messages", "show", id], { markdown: markdown ?? false }))
 );
 
 addTool("create_message",
@@ -256,17 +320,23 @@ addTool("create_message",
 
 // ── CARDS (KANBAN) ────────────────────────────────────────────────────────────
 
-addTool("list_cards", "List all active cards in a project's card table",
+addTool("list_cards", "List all active cards in a project's card table. Returns paginated results — check page.has_more.",
   {
     project: z.string().describe("Project ID or name"),
     column: z.string().optional().describe("Filter by column ID"),
     card_table: z.string().optional().describe("Card table ID (required if project has multiple tables)"),
+    all: z.boolean().optional().describe("Fetch all cards; sets page.has_more=false"),
+    limit: z.number().int().optional().describe("Max results"),
+    page: z.number().int().optional().describe("Page number"),
   },
-  async ({ project, column, card_table }) => {
+  async ({ project, column, card_table, all, limit, page }) => {
     const args = ["cards", "list", "--in", project];
     if (column) args.push("--column", column);
     if (card_table) args.push("--card-table", card_table);
-    return ok(await runBasecamp(args));
+    if (all) args.push("--all");
+    else if (limit != null) args.push("--limit", String(limit));
+    if (page != null) args.push("--page", String(page));
+    return ok(wrapPaginated(await runBasecamp(args), { all, limit }));
   }
 );
 
@@ -303,7 +373,7 @@ addTool("create_card", "Create a new card in a project's card table",
   }
 );
 
-addTool("move_card", "Move a card to a different column (optionally to on-hold section)",
+addTool("move_card", "Move a single card to a different column. To move multiple cards at once, use move_cards.",
   {
     id: z.string().describe("Card ID"),
     to: z.string().optional().describe("Target column ID or name"),
@@ -320,6 +390,40 @@ addTool("move_card", "Move a card to a different column (optionally to on-hold s
     if (project) args.push("--in", project);
     if (card_table) args.push("--card-table", card_table);
     return ok(await runBasecamp(args));
+  }
+);
+
+addTool("move_cards",
+  "Move multiple cards to columns in parallel. Each move specifies a card id and target column. " +
+  "Returns { succeeded: [id, ...], failed: [{ id, reason }, ...] } for partial-success visibility.",
+  {
+    moves: z.array(z.object({
+      id: z.string().describe("Card ID"),
+      to: z.string().describe("Target column ID or name"),
+      position: z.number().int().optional().describe("Position in column (1-indexed)"),
+      on_hold: z.boolean().optional().describe("Move to on-hold section"),
+      project: z.string().optional().describe("Project ID or name"),
+      card_table: z.string().optional().describe("Card table ID (required if project has multiple tables)"),
+    })).min(1).describe("Array of moves to perform in parallel"),
+  },
+  async ({ moves }) => {
+    const results = await Promise.allSettled(
+      moves.map(({ id, to, position, on_hold, project, card_table }) => {
+        const args = ["cards", "move", id];
+        if (to) args.push("--to", to);
+        if (position != null) args.push("--position", String(position));
+        if (on_hold) args.push("--on-hold");
+        if (project) args.push("--in", project);
+        if (card_table) args.push("--card-table", card_table);
+        return runBasecamp(args);
+      })
+    );
+    const succeeded = [], failed = [];
+    results.forEach((r, i) => {
+      if (r.status === "fulfilled") succeeded.push(moves[i].id);
+      else failed.push({ id: moves[i].id, reason: r.reason?.stderr?.trim() || r.reason?.message });
+    });
+    return ok(JSON.stringify({ succeeded, failed }, null, 2));
   }
 );
 
@@ -469,14 +573,20 @@ addTool("delete_step", "Permanently delete a step from a card",
 
 // ── COMMENTS ─────────────────────────────────────────────────────────────────
 
-addTool("list_comments", "List comments on a Basecamp recording (todo, message, card, etc.)",
+addTool("list_comments", "List comments on a Basecamp recording (todo, message, card, etc.). Returns paginated results — check page.has_more.",
   {
     id: z.string().describe("Recording ID or Basecamp URL"),
     project: z.string().optional().describe("Project ID or name"),
+    all: z.boolean().optional().describe("Fetch all comments; sets page.has_more=false"),
+    limit: z.number().int().optional().describe("Max results"),
+    page: z.number().int().optional().describe("Page number"),
   },
-  async ({ id, project }) => {
+  async ({ id, project, all, limit, page }) => {
     const args = ["comments", "list", id];
     if (project) args.push("--in", project);
+    if (all) args.push("--all");
+    else if (limit != null) args.push("--limit", String(limit));
+    if (page != null) args.push("--page", String(page));
     const raw = await runBasecamp(args);
     try {
       const envelope = JSON.parse(raw);
@@ -489,13 +599,15 @@ addTool("list_comments", "List comments on a Basecamp recording (todo, message, 
         } catch (_) { /* not a comment, genuinely empty */ }
       }
     } catch (_) { /* non-JSON response, return as-is */ }
-    return ok(raw);
+    return ok(wrapPaginated(raw, { all, limit }));
   }
 );
 
 addTool("show_comment",
-  "Show a single comment by ID. Use this when you have a comment ID (e.g. from a timeline event or notification) " +
-  "but do not yet know the parent recording. Returns the full comment object including parent id, type, and URL.",
+  "Show a single comment by ID. Returns the full comment object including parent recording id, type, and URL. " +
+  "Use this when you have a comment ID from a timeline event, notification, or URL fragment. " +
+  "If you have a comment URL, call parse_url first to extract the comment_id. " +
+  "For all comments on a recording, use list_comments instead.",
   { id: z.string().describe("Comment ID") },
   async ({ id }) => ok(await runBasecamp(["comments", "show", id]))
 );
@@ -515,6 +627,82 @@ addTool("add_comment",
   }
 );
 
+// ── DOCS & FILES ──────────────────────────────────────────────────────────────
+
+addTool("list_files",
+  "List all contents of a Docs & Files folder: subfolders, documents, and uploads. " +
+  "Omit folder to list the project root. Returns everything in the folder (no pagination — folders are typically small). " +
+  "For large folders, use list_documents or list_uploads for filtered/paginated views.",
+  {
+    project: z.string().describe("Project ID or name"),
+    folder: z.string().optional().describe("Folder (vault) ID — omit for project root"),
+  },
+  async ({ project, folder }) => {
+    const args = ["files", "list", "--in", project];
+    if (folder) args.push("--vault", folder);
+    return ok(await runBasecamp(args));
+  }
+);
+
+addTool("show_file",
+  "Show a Docs & Files item by ID or Basecamp URL: folder/vault metadata, document (with full title and body content), or upload details. " +
+  "Works for any item type — pass the URL or ID from list_files output. " +
+  "For documents, this is the primary way to read document content. " +
+  "Use markdown=true for cleaner rendering of rich document bodies.",
+  {
+    id: z.string().describe("Item ID or full Basecamp URL (works for vaults, documents, and uploads)"),
+    project: z.string().optional().describe("Project ID or name"),
+    markdown: z.boolean().optional().describe("Return Markdown-formatted output instead of JSON (recommended for documents)"),
+  },
+  async ({ id, project, markdown }) => {
+    const args = ["files", "show", id];
+    if (project) args.push("--in", project);
+    return ok(await runBasecamp(args, { markdown: markdown ?? false }));
+  }
+);
+
+addTool("list_documents",
+  "List documents in a project's Docs & Files (documents only, not uploads or subfolders). " +
+  "Omit folder for project root. Returns paginated results — check page.has_more. " +
+  "Use all=true to fetch all documents at once. To see everything including folders and uploads, use list_files.",
+  {
+    project: z.string().describe("Project ID or name"),
+    folder: z.string().optional().describe("Folder (vault) ID — omit for project root"),
+    all: z.boolean().optional().describe("Fetch all documents; sets page.has_more=false"),
+    limit: z.number().int().optional().describe("Max results"),
+    page: z.number().int().optional().describe("Page number"),
+  },
+  async ({ project, folder, all, limit, page }) => {
+    const args = ["files", "documents", "list", "--in", project];
+    if (folder) args.push("--vault", folder);
+    if (all) args.push("--all");
+    else if (limit != null) args.push("--limit", String(limit));
+    if (page != null) args.push("--page", String(page));
+    return ok(wrapPaginated(await runBasecamp(args), { all, limit }));
+  }
+);
+
+addTool("list_uploads",
+  "List uploaded files in a project's Docs & Files (uploads only, not documents or subfolders). " +
+  "Returns file metadata including download URLs. " +
+  "Omit folder for project root. Returns paginated results — check page.has_more.",
+  {
+    project: z.string().describe("Project ID or name"),
+    folder: z.string().optional().describe("Folder (vault) ID — omit for project root"),
+    all: z.boolean().optional().describe("Fetch all uploads; sets page.has_more=false"),
+    limit: z.number().int().optional().describe("Max results"),
+    page: z.number().int().optional().describe("Page number"),
+  },
+  async ({ project, folder, all, limit, page }) => {
+    const args = ["files", "uploads", "list", "--in", project];
+    if (folder) args.push("--vault", folder);
+    if (all) args.push("--all");
+    else if (limit != null) args.push("--limit", String(limit));
+    if (page != null) args.push("--page", String(page));
+    return ok(wrapPaginated(await runBasecamp(args), { all, limit }));
+  }
+);
+
 // ── SCHEDULE ──────────────────────────────────────────────────────────────────
 
 addTool("list_schedule_entries",
@@ -522,14 +710,18 @@ addTool("list_schedule_entries",
   {
     project: z.string().describe("Project ID or name"),
   },
-  async ({ project }) => ok(await runBasecamp(["schedule", "entries", "--in", project]))
+  async ({ project }) =>
+    ok(wrapPaginated(await runBasecamp(["schedule", "entries", "--in", project])))
 );
 
 // ── CHAT ─────────────────────────────────────────────────────────────────────
 
-addTool("list_chat_messages", "List recent messages in a project's chat",
+addTool("list_chat_messages",
+  "List recent messages in a project's Campfire CHAT (real-time, no subject/title). NOT message board posts. " +
+  "For structured message board posts with subjects, use list_messages.",
   { project: z.string().describe("Project ID or name") },
-  async ({ project }) => ok(await runBasecamp(["chat", "messages", "--in", project]))
+  async ({ project }) =>
+    ok(wrapPaginated(await runBasecamp(["chat", "messages", "--in", project])))
 );
 
 addTool("post_chat_message",
@@ -545,12 +737,15 @@ addTool("post_chat_message",
 // ── ASSIGNMENTS & REPORTS ─────────────────────────────────────────────────────
 
 addTool("get_assignments",
-  "Get your own assignments across all projects (priorities + non-priorities). " +
-  "Prefer this over list_todos for a cross-project overview of your own work.",
+  "Cross-project todo assignments FOR THE AUTHENTICATED USER (you), grouped by priority. " +
+  "Scope filters by time window. " +
+  "Empty result means you have no todos in that scope — does not mean you have no todos at all. " +
+  "For a different person's todos, use get_assigned_todos. " +
+  "For overdue todos across all assignees, use get_overdue_todos.",
   {
     scope: z.enum(["all", "overdue", "due_today", "due_tomorrow", "due_later_this_week", "due_next_week", "completed"])
       .optional()
-      .describe("Scope: 'all' (default), 'overdue', 'due_today', 'due_tomorrow', 'due_later_this_week', 'due_next_week', 'completed'"),
+      .describe("'all' (default), 'overdue', 'due_today', 'due_tomorrow', 'due_later_this_week', 'due_next_week', 'completed'"),
   },
   async ({ scope }) => {
     if (!scope || scope === "all") return ok(await runBasecamp(["assignments"]));
@@ -560,8 +755,9 @@ addTool("get_assignments",
 );
 
 addTool("get_assigned_todos",
-  "Get todos assigned to any person across all projects (cross-project report). " +
-  "Use 'me' for yourself, or a name/ID for someone else. Prefer this over list_todos for cross-project assignee queries.",
+  "Cross-project todos assigned to ANY person (not limited to yourself). " +
+  "Pass assignee name/ID or 'me'. Results are NOT priority-grouped (unlike get_assignments). " +
+  "Use this for team-member overviews; use get_assignments for your own priority-grouped view.",
   { assignee: z.string().optional().describe("Person name, ID, or 'me' (defaults to current user)") },
   async ({ assignee }) => {
     const args = ["reports", "assigned"];
@@ -618,7 +814,9 @@ addTool("get_schedule",
 
 // ── NOTIFICATIONS ─────────────────────────────────────────────────────────────
 
-addTool("list_notifications", "List your Basecamp notifications",
+addTool("list_notifications",
+  "List your Basecamp notifications. Returns { data: { memories, reads, unreads } } — a structured inbox, not a flat list. " +
+  "Use page param to paginate.",
   { page: z.number().int().optional().describe("Page number (default: 1)") },
   async ({ page }) => {
     const args = ["notifications"];
@@ -641,17 +839,53 @@ addTool("mark_notification_read", "Mark a notification as read",
 
 // ── SEARCH ───────────────────────────────────────────────────────────────────
 
-addTool("search", "Full-text search across all Basecamp content",
+addTool("search",
+  "Full-text search across all Basecamp content. " +
+  "Note: search may miss recently created content or return incomplete results for some types. " +
+  "If search misses known content, use browse_content to list by type instead — it is exhaustive. " +
+  "Returns paginated results — check page.has_more.",
   {
     query: z.string().describe("Search query"),
+    all: z.boolean().optional().describe("Fetch all results; sets page.has_more=false"),
     limit: z.number().int().optional().describe("Max results"),
     sort: z.enum(["created_at", "updated_at"]).optional().describe("Sort order (default: relevance)"),
   },
-  async ({ query, limit, sort }) => {
+  async ({ query, all, limit, sort }) => {
     const args = ["search", query];
-    if (limit != null) args.push("--limit", String(limit));
+    if (all) args.push("--all");
+    else if (limit != null) args.push("--limit", String(limit));
     if (sort) args.push("--sort", sort);
-    return ok(await runBasecamp(args));
+    return ok(wrapPaginated(await runBasecamp(args), { all, limit }));
+  }
+);
+
+// ── BROWSE BY TYPE ────────────────────────────────────────────────────────────
+
+addTool("browse_content",
+  "Browse content across all projects by type — more reliable than search for finding all items of a given type. " +
+  "type is required: 'todo', 'message', 'document', 'comment', 'card', or 'upload'. " +
+  "Scoped to a single project with project param. " +
+  "Zero results means no content of that type was found — not a search miss. " +
+  "Returns paginated results — check page.has_more. Use all=true to fetch exhaustively.",
+  {
+    type: z.enum(["todo", "message", "document", "comment", "card", "upload"])
+      .describe("Content type to browse"),
+    project: z.string().optional().describe("Project ID or name (omit for all projects)"),
+    all: z.boolean().optional().describe("Fetch all results; sets page.has_more=false"),
+    limit: z.number().int().optional().describe("Max results"),
+    page: z.number().int().optional().describe("Page number"),
+    sort: z.enum(["updated_at", "created_at"]).optional().describe("Sort field (default: updated_at)"),
+    status: z.enum(["active", "trashed", "archived"]).optional().describe("Status filter (default: active)"),
+  },
+  async ({ type, project, all, limit, page, sort, status }) => {
+    const args = ["recordings", "list", "--type", type];
+    if (project) args.push("--in", project);
+    if (all) args.push("--all");
+    else if (limit != null) args.push("--limit", String(limit));
+    if (page != null) args.push("--page", String(page));
+    if (sort) args.push("--sort", sort);
+    if (status) args.push("--status", status);
+    return ok(wrapPaginated(await runBasecamp(args), { all, limit }));
   }
 );
 
@@ -684,7 +918,7 @@ addTool("list_people", "List people in the account or on a specific project",
   async ({ project }) => {
     const args = ["people", "list"];
     if (project) args.push("--project", project);
-    return ok(await runBasecamp(args));
+    return ok(wrapPaginated(await runBasecamp(args)));
   }
 );
 
@@ -734,8 +968,9 @@ addTool("get_project_overview",
 addTool("basecamp_run",
   "LAST RESORT: run any basecamp CLI command not covered by a specific tool. " +
   "Always prefer the specific tools above. Only use this for: gauges, lineup, check-ins, " +
-  "webhooks, subscriptions, templates, recordings (cross-project), files/uploads, " +
-  "accounts, schedule create/update, todos position/sweep, messages pin/publish." +
+  "webhooks, subscriptions, templates, " +
+  "accounts, schedule create/update, todos position/sweep, messages pin/publish, " +
+  "timesheet, forwards, boost/reactions, tools (project dock), attachments download. " +
   "Do NOT pass --json or --md yourself — they are appended automatically. " +
   "Pass args as an array, e.g. [\"gauges\", \"list\"] or [\"checkins\", \"questions\", \"--in\", \"MyProject\"].",
   {
@@ -743,10 +978,11 @@ addTool("basecamp_run",
       "CLI arguments after 'basecamp'. Examples: " +
       "[\"gauges\", \"list\"], " +
       "[\"lineup\", \"list\"], " +
-      "[\"recordings\", \"todos\"], " +
       "[\"checkins\", \"questions\", \"--in\", \"MyProject\"], " +
       "[\"templates\", \"list\"], " +
-      "[\"webhooks\", \"list\", \"--in\", \"MyProject\"]"
+      "[\"webhooks\", \"list\", \"--in\", \"MyProject\"], " +
+      "[\"timesheet\", \"report\"], " +
+      "[\"forwards\", \"list\", \"--in\", \"MyProject\"]"
     ),
     markdown: z.boolean().optional().describe("Use --md (Markdown) output instead of --json"),
     jq: z.string().optional().describe("JQ expression to filter the JSON output, e.g. '.[].title'"),
