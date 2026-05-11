@@ -43,9 +43,11 @@ The official skill documents `recordings <type>` in its reference section but fr
 
 **Upstream suggestion:** add to SKILL.md's Decision Tree: "If search misses known content, use `recordings <type>` — it is exhaustive for that content type and will not miss items."
 
-### 4. `move_cards` — parallel bulk card moves
+### 4. Bulk operations with partial-success shape
 
-Runs multiple `cards move` calls in parallel, returns `{ succeeded: [ids], failed: [{ id, reason }] }`. The official skill documents single-card `cards move` only.
+`move_cards`, `complete_todo`, `reopen_todo`, `assign_todos`, and `mark_notification_read` all accept arrays and run operations in parallel via `Promise.allSettled`. Each returns `{ succeeded: [ids], failed: [{ id, reason }] }`. The official skill documents only single-item operations.
+
+`assign_todos` replaces `assign_todo` with a richer per-item shape: `{ id, assignee_ids[], due_date? }`, where each todo can have independent assignees and an optional due date update in the same call.
 
 ### 5. ~~`--comments` on show tools~~
 
@@ -59,7 +61,15 @@ The official skill has create/move but not update. Added for completeness.
 
 Steps are structurally identical to todos and used for assigning subtasks on cards. Not covered in the official skill reference.
 
-### 8. Disambiguated tool descriptions
+### 8. Scoped search via `search(scopes=[...])`
+
+When `scopes` is provided, `search` returns `{ scopes_searched, hits_by_scope, warnings }` grouped by content type instead of a flat list. Implemented as a single CLI call with client-side grouping (the CLI search command has no `--type` flag). Non-scope types (`Gauge`, `Kanban::Step`, etc.) are silently dropped from results.
+
+### 9. No silent truncation in `show` commands
+
+CLI `show` commands return full body fields. Verified at ~20 KB (200-line document and message). No `truncated` signal needed.
+
+### 10. Disambiguated tool descriptions
 
 The official skill's `--agent --help` output describes tools individually, but the MCP tool descriptions must disambiguate sibling tools from the schema alone (an LLM has no way to run `--agent --help`). Key disambiguation added:
 
@@ -103,7 +113,7 @@ Always prefer the named tools over `basecamp_run`. The routing table:
 | List todos (cross-project, any person) | `get_assigned_todos` |
 | Overdue todos (cross-project) | `get_overdue_todos` |
 | Create a todo | `create_todo` |
-| Complete one or more todos | `complete_todo` |
+| Complete one or more todos | `complete_todo` (returns partial-success shape) |
 | Show a todo (with optional comments) | `show_todo` |
 | List projects | `list_projects` |
 | Show a project | `show_project` |
@@ -115,6 +125,8 @@ Always prefer the named tools over `basecamp_run`. The routing table:
 | List cards | `list_cards` |
 | Create a card | `create_card` |
 | Move one card | `move_card` |
+| Reopen one or more todos | `reopen_todo` (returns partial-success shape) |
+| Assign todos (per-todo assignees + due) | `assign_todos` (returns partial-success shape) |
 | Move multiple cards | `move_cards` |
 | Update a card | `update_card` |
 | Show a card (with optional comments) | `show_card` |
@@ -136,7 +148,7 @@ Always prefer the named tools over `basecamp_run`. The routing table:
 | Full-text search | `search` |
 | Recent activity | `get_timeline` |
 | Chat | `post_chat_message` / `list_chat_messages` |
-| Notifications | `list_notifications` / `mark_notification_read` |
+| Notifications | `list_notifications` / `mark_notification_read` (bulk, partial-success shape) |
 
 ### `basecamp_run` — last resort only
 
