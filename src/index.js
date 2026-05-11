@@ -232,7 +232,7 @@ addTool("create_todo",
   }
 );
 
-addTool("complete_todo",
+addTool("complete_todos",
   "Mark one or more todos as complete in parallel. " +
   "Returns { succeeded: [id, ...], failed: [{ id, reason }, ...] }.",
   { ids: z.array(z.string()).min(1).describe("Todo ID(s) or Basecamp URL(s)") },
@@ -242,7 +242,7 @@ addTool("complete_todo",
   }
 );
 
-addTool("reopen_todo",
+addTool("reopen_todos",
   "Uncomplete (reopen) one or more todos in parallel. " +
   "Returns { succeeded: [id, ...], failed: [{ id, reason }, ...] }.",
   { ids: z.array(z.string()).min(1).describe("Todo ID(s) or Basecamp URL(s)") },
@@ -398,7 +398,9 @@ addTool("list_cards", "List all active cards in a project's card table. Returns 
   }
 );
 
-addTool("list_card_columns", "List the columns in a project's card table",
+addTool("list_card_columns",
+  "List the columns in a project's card table. " +
+  "Returns paginated envelope with page.has_more=false (columns are a complete bounded set).",
   {
     project: z.string().describe("Project ID or name"),
     card_table: z.string().optional().describe("Card table ID (required if project has multiple tables)"),
@@ -406,7 +408,7 @@ addTool("list_card_columns", "List the columns in a project's card table",
   async ({ project, card_table }) => {
     const args = ["cards", "columns", "--in", project];
     if (card_table) args.push("--card-table", card_table);
-    return ok(await runBasecamp(args));
+    return ok(wrapPaginated(await runBasecamp(args), { all: true }));
   }
 );
 
@@ -786,14 +788,17 @@ addTool("list_schedule_entries",
 addTool("list_chat_messages",
   "List recent messages in a project's Campfire CHAT (real-time, no subject/title). NOT message board posts. " +
   "For structured message board posts with subjects, use list_messages. " +
-  "Returns paginated results — check page.has_more.",
+  "Returns paginated results — check page.has_more. " +
+  "Note: all=true is not supported by the CLI for chat; use limit to control page size (default 25).",
   {
     project: z.string().describe("Project ID or name"),
-    limit: z.number().int().optional().describe("Max results"),
+    limit: z.number().int().optional().describe("Max results (default 25; all=true not available for chat)"),
+    room: z.string().optional().describe("Campfire room ID (for projects with multiple rooms)"),
   },
-  async ({ project, limit }) => {
+  async ({ project, limit, room }) => {
     const args = ["chat", "messages", "--in", project];
     if (limit != null) args.push("--limit", String(limit));
+    if (room) args.push("--room", room);
     return ok(wrapPaginated(await runBasecamp(args), { limit }));
   }
 );
@@ -889,17 +894,21 @@ addTool("get_schedule",
 // ── NOTIFICATIONS ─────────────────────────────────────────────────────────────
 
 addTool("list_notifications",
-  "List your Basecamp notifications. Returns { data: { memories, reads, unreads } } — a structured inbox, not a flat list. " +
-  "Use page param to paginate.",
+  "List your Basecamp notifications. Returns { data: { memories, reads, unreads }, page: { has_more } } — a structured inbox, not a flat list. " +
+  "page.has_more is null (unknown); increment page param to fetch the next page.",
   { page: z.number().int().optional().describe("Page number (default: 1)") },
   async ({ page }) => {
     const args = ["notifications"];
     if (page && page > 1) args.push("--page", String(page));
-    return ok(await runBasecamp(args));
+    const raw = await runBasecamp(args);
+    let parsed;
+    try { parsed = JSON.parse(raw); } catch { return ok(raw); }
+    parsed.page = { has_more: null, note: "Increment page param to fetch next page" };
+    return ok(JSON.stringify(parsed, null, 2));
   }
 );
 
-addTool("mark_notification_read",
+addTool("mark_notifications_read",
   "Mark one or more notifications as read in parallel. " +
   "Returns { succeeded: [id, ...], failed: [{ id, reason }, ...] }. " +
   "Use page to match the page you listed notifications from (all IDs must be from the same page).",
@@ -934,45 +943,92 @@ addTool("search",
   "Note: search may miss recently created content or return incomplete results for some types. " +
   "If search misses known content, use browse_content to list by type instead — it is exhaustive. " +
   "Without scopes: returns paginated results — check page.has_more. " +
-  "With scopes: returns { scopes_searched, hits_by_scope, warnings } grouped by content type.",
+  "With scopes: returns { scopes_searched, hits_by_scope, warnings } grouped by content type. " +
+  "With project_ids: runs one search per project in parallel and merges results; per-project failures appear in warnings.",
   {
     query: z.string().describe("Search query"),
     scopes: z.array(z.enum(["todo","message","comment","card","document","upload"]))
       .optional().describe("Content types to search. When provided, returns hits grouped by type instead of a flat list."),
+    project_ids: z.array(z.string()).optional().describe(
+      "Limit search to these project IDs or names. Runs one search per project and merges results. " +
+      "Failed projects are reported in warnings rather than aborting the whole search."
+    ),
     all: z.boolean().optional().describe("Fetch all results; sets page.has_more=false (ignored when scopes is set)"),
     limit: z.number().int().optional().describe("Max results"),
     sort: z.enum(["created_at", "updated_at"]).optional().describe("Sort order (default: relevance)"),
   },
-  async ({ query, scopes, all, limit, sort }) => {
-    const args = ["search", query];
-    if (all) args.push("--all");
-    else if (limit != null) args.push("--limit", String(limit));
-    if (sort) args.push("--sort", sort);
+  async ({ query, scopes, project_ids, all, limit, sort }) => {
+    const buildArgs = (projectId) => {
+      const args = ["search", query];
+      if (projectId) args.push("--project", projectId);
+      if (all) args.push("--all");
+      else if (limit != null) args.push("--limit", String(limit));
+      if (sort) args.push("--sort", sort);
+      return args;
+    };
+
+    const targets = project_ids?.length ? project_ids : [null];
 
     if (!scopes) {
-      return ok(wrapPaginated(await runBasecamp(args), { all, limit }));
+      // Flat mode: run searches in parallel, merge items.
+      const settled = await Promise.allSettled(targets.map(pid => runBasecamp(buildArgs(pid))));
+      const warnings = [];
+      const allItems = [];
+      for (let i = 0; i < settled.length; i++) {
+        const r = settled[i];
+        if (r.status === "fulfilled") {
+          let parsed;
+          try { parsed = JSON.parse(r.value); } catch { continue; }
+          const items = Array.isArray(parsed.data) ? parsed.data : Array.isArray(parsed) ? parsed : [];
+          allItems.push(...items);
+        } else {
+          const pid = targets[i];
+          const reason = r.reason?.stderr?.trim() || r.reason?.message || String(r.reason);
+          warnings.push(pid ? `search in project '${pid}' failed: ${reason}` : `search failed: ${reason}`);
+        }
+      }
+      if (targets.length === 1 && !project_ids) {
+        // Single global search — use standard wrapPaginated logic.
+        const raw = settled[0].status === "fulfilled" ? settled[0].value : null;
+        if (!raw) return ok(JSON.stringify({ items: [], count: 0, page: { has_more: false }, warnings }, null, 2));
+        return ok(wrapPaginated(raw, { all, limit }));
+      }
+      const result = { items: allItems, count: allItems.length, page: { has_more: false } };
+      if (warnings.length) result.warnings = warnings;
+      return ok(JSON.stringify(result, null, 2));
     }
 
-    // Scoped mode: one search call, group results by type client-side.
-    let items = [], warnings = [];
-    try {
-      const raw = await runBasecamp(args);
-      const parsed = JSON.parse(raw);
-      items = Array.isArray(parsed.data) ? parsed.data : Array.isArray(parsed) ? parsed : [];
-    } catch (e) {
-      const reason = e.stderr?.trim() || e.message;
-      warnings.push(`search failed: ${reason}`);
-      return ok(JSON.stringify({ scopes_searched: [], hits_by_scope: {}, warnings }, null, 2));
-    }
-
+    // Scoped mode: run searches in parallel, group results by type.
+    const settled = await Promise.allSettled(targets.map(pid => runBasecamp(buildArgs(pid))));
+    const warnings = [];
     const hits_by_scope = Object.fromEntries(scopes.map(s => [s, []]));
-    for (const item of items) {
-      const scope = SCOPE_TYPE_MAP[item.type];
-      if (scope && hits_by_scope[scope] !== undefined) {
-        hits_by_scope[scope].push(item);
+    let anySearched = false;
+
+    for (let i = 0; i < settled.length; i++) {
+      const r = settled[i];
+      if (r.status === "fulfilled") {
+        anySearched = true;
+        let parsed;
+        try { parsed = JSON.parse(r.value); } catch { continue; }
+        const items = Array.isArray(parsed.data) ? parsed.data : Array.isArray(parsed) ? parsed : [];
+        for (const item of items) {
+          const scope = SCOPE_TYPE_MAP[item.type];
+          if (scope && hits_by_scope[scope] !== undefined) {
+            hits_by_scope[scope].push(item);
+          }
+        }
+      } else {
+        const pid = targets[i];
+        const reason = r.reason?.stderr?.trim() || r.reason?.message || String(r.reason);
+        warnings.push(pid ? `search in project '${pid}' failed: ${reason}` : `search failed: ${reason}`);
       }
     }
-    return ok(JSON.stringify({ scopes_searched: scopes, hits_by_scope, warnings }, null, 2));
+
+    return ok(JSON.stringify({
+      scopes_searched: anySearched ? scopes : [],
+      hits_by_scope,
+      warnings,
+    }, null, 2));
   }
 );
 

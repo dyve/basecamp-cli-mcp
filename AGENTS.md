@@ -45,7 +45,7 @@ The official skill documents `recordings <type>` in its reference section but fr
 
 ### 4. Bulk operations with partial-success shape
 
-`move_cards`, `complete_todo`, `reopen_todo`, `assign_todos`, and `mark_notification_read` all accept arrays and run operations in parallel via `Promise.allSettled`. Each returns `{ succeeded: [ids], failed: [{ id, reason }] }`. The official skill documents only single-item operations.
+`move_cards`, `complete_todos`, `reopen_todos`, `assign_todos`, and `mark_notifications_read` all accept arrays and run operations in parallel via `Promise.allSettled`. Each returns `{ succeeded: [ids], failed: [{ id, reason }] }`. The official skill documents only single-item operations.
 
 `assign_todos` replaces `assign_todo` with a richer per-item shape: `{ id, assignee_ids[], due_date? }`, where each todo can have independent assignees and an optional due date update in the same call.
 
@@ -61,9 +61,11 @@ The official skill has create/move but not update. Added for completeness.
 
 Steps are structurally identical to todos and used for assigning subtasks on cards. Not covered in the official skill reference.
 
-### 8. Scoped search via `search(scopes=[...])`
+### 8. Scoped and project-filtered search
 
-When `scopes` is provided, `search` returns `{ scopes_searched, hits_by_scope, warnings }` grouped by content type instead of a flat list. Implemented as a single CLI call with client-side grouping (the CLI search command has no `--type` flag). Non-scope types (`Gauge`, `Kanban::Step`, etc.) are silently dropped from results.
+`search(scopes=[...])` returns `{ scopes_searched, hits_by_scope, warnings }` grouped by content type instead of a flat list. Implemented as a single CLI call with client-side grouping (the CLI search command has no `--type` flag). Non-scope types (`Gauge`, `Kanban::Step`, etc.) are silently dropped from results.
+
+`search(project_ids=[...])` runs one search per project in parallel (using the CLI `--project` flag) and merges results. Per-project failures surface in `warnings` rather than aborting the search. Combining `scopes` and `project_ids` returns a merged scoped result across all specified projects.
 
 ### 9. No silent truncation in `show` commands
 
@@ -113,7 +115,7 @@ Always prefer the named tools over `basecamp_run`. The routing table:
 | List todos (cross-project, any person) | `get_assigned_todos` |
 | Overdue todos (cross-project) | `get_overdue_todos` |
 | Create a todo | `create_todo` |
-| Complete one or more todos | `complete_todo` (returns partial-success shape) |
+| Complete one or more todos | `complete_todos` (returns partial-success shape) |
 | Show a todo (with optional comments) | `show_todo` |
 | List projects | `list_projects` |
 | Show a project | `show_project` |
@@ -125,7 +127,7 @@ Always prefer the named tools over `basecamp_run`. The routing table:
 | List cards | `list_cards` |
 | Create a card | `create_card` |
 | Move one card | `move_card` |
-| Reopen one or more todos | `reopen_todo` (returns partial-success shape) |
+| Reopen one or more todos | `reopen_todos` (returns partial-success shape) |
 | Assign todos (per-todo assignees + due) | `assign_todos` (returns partial-success shape) |
 | Move multiple cards | `move_cards` |
 | Update a card | `update_card` |
@@ -148,7 +150,7 @@ Always prefer the named tools over `basecamp_run`. The routing table:
 | Full-text search | `search` |
 | Recent activity | `get_timeline` |
 | Chat | `post_chat_message` / `list_chat_messages` |
-| Notifications | `list_notifications` / `mark_notification_read` (bulk, partial-success shape) |
+| Notifications | `list_notifications` / `mark_notifications_read` (bulk, partial-success shape) |
 
 ### `basecamp_run` — last resort only
 
