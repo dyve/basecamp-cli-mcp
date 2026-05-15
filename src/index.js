@@ -176,6 +176,20 @@ addTool("show_project", "Show details of a Basecamp project",
   async ({ id }) => ok(await runBasecamp(["projects", "show", id]))
 );
 
+addTool("update_project", "Update a project's name or description",
+  {
+    id: z.string().describe("Project ID or name"),
+    name: z.string().optional().describe("New project name"),
+    description: z.string().optional().describe("New description (shown on the project tile)"),
+  },
+  async ({ id, name, description }) => {
+    const args = ["projects", "update", id];
+    if (name) args.push("--name", name);
+    if (description) args.push("--description", description);
+    return ok(await runBasecamp(args));
+  }
+);
+
 // ── TODOS ────────────────────────────────────────────────────────────────────
 
 addTool("list_todos",
@@ -196,13 +210,19 @@ addTool("list_todos",
     const args = ["todos", "list"];
     if (project) args.push("--in", project);
     if (list) args.push("--list", list);
-    if (status) args.push("--status", status);
+    // CLI --status flag silently ignored in v0.7.2; filter client-side instead
     if (assignee) args.push("--assignee", assignee);
     if (overdue) args.push("--overdue");
-    if (all) args.push("--all");
+    if (all || status) args.push("--all");
     else if (limit != null) args.push("--limit", String(limit));
-    if (page != null) args.push("--page", String(page));
-    return ok(wrapPaginated(await runBasecamp(args), { all, limit }));
+    if (!status && page != null) args.push("--page", String(page));
+    const raw = await runBasecamp(args);
+    if (!status) return ok(wrapPaginated(raw, { all, limit }));
+    let parsed;
+    try { parsed = JSON.parse(raw); } catch { return ok(raw); }
+    const allItems = Array.isArray(parsed.data) ? parsed.data : Array.isArray(parsed) ? parsed : [];
+    const items = allItems.filter(t => t.completed === (status === "completed"));
+    return ok(JSON.stringify({ items, count: items.length, page: { has_more: false } }, null, 2));
   }
 );
 
@@ -372,6 +392,26 @@ addTool("create_message",
     args.push("--in", project);
     if (no_subscribe) args.push("--no-subscribe");
     else if (subscribe) args.push("--subscribe", subscribe);
+    return ok(await runBasecamp(args));
+  }
+);
+
+addTool("update_message",
+  "Update an existing message's title or body. Body supports Markdown and @mentions. " +
+  "Replaces the full body — not an append. Partial update (title only or body only) is supported.",
+  {
+    id: z.string().describe("Message ID or Basecamp URL"),
+    project: z.string().optional().describe("Project ID or name"),
+    title: z.string().optional().describe("New subject/title"),
+    body: z.string().optional().describe("New body (Markdown and @mentions supported; replaces existing body)"),
+    message_board: z.string().optional().describe("Message board ID (required if project has multiple boards)"),
+  },
+  async ({ id, project, title, body, message_board }) => {
+    const args = ["messages", "update", id];
+    if (project) args.push("--in", project);
+    if (title) args.push("--title", title);
+    if (body) args.push("--body", body);
+    if (message_board) args.push("--message-board", message_board);
     return ok(await runBasecamp(args));
   }
 );
@@ -1072,14 +1112,16 @@ addTool("get_timeline",
     person: z.string().optional().describe("Person ID (filter to their activity)"),
     me: z.boolean().optional().describe("Show only your own activity"),
     limit: z.number().int().optional().describe("Max results (default: 100)"),
+    page: z.number().int().optional().describe("Page number (use with limit for manual pagination)"),
     all: z.boolean().optional().describe("Fetch all events (may be slow on large accounts)"),
   },
-  async ({ project, person, me, limit, all }) => {
+  async ({ project, person, me, limit, page, all }) => {
     const args = me ? ["timeline", "me"] : ["timeline"];
     if (project) args.push("--in", project);
     if (person) args.push("--person", person);
     if (all) args.push("--all");
     else if (limit != null) args.push("--limit", String(limit));
+    if (page != null) args.push("--page", String(page));
     return ok(await runBasecamp(args));
   }
 );
