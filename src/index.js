@@ -152,6 +152,31 @@ function collectResults(ids, settled) {
   return { succeeded, failed };
 }
 
+async function resolveProjectId(nameOrId) {
+  if (/^\d+$/.test(String(nameOrId))) return String(nameOrId);
+  try {
+    const raw = await runBasecamp(["projects", "list", "--all"]);
+    const parsed = JSON.parse(raw);
+    const list = Array.isArray(parsed.data) ? parsed.data : Array.isArray(parsed) ? parsed : [];
+    const found = list.find(p => p.name?.toLowerCase() === String(nameOrId).toLowerCase());
+    if (found) return String(found.id);
+  } catch {}
+  return String(nameOrId);
+}
+
+// Flattens { high: [...], medium: [...], low: [...] } into a flat array with a `priority` field on each item.
+// Passes flat arrays through unchanged.
+function flattenPriorityGroups(data) {
+  if (Array.isArray(data)) return data;
+  const items = [];
+  const knownOrder = ["high", "medium", "low"];
+  const keys = [...new Set([...knownOrder, ...Object.keys(data)])].filter(k => Array.isArray(data[k]));
+  for (const priority of keys) {
+    items.push(...data[priority].map(item => ({ ...item, priority })));
+  }
+  return items;
+}
+
 // ── URL PARSING ──────────────────────────────────────────────────────────────
 
 addTool("parse_url",
@@ -866,6 +891,7 @@ addTool("post_chat_message",
 addTool("get_assignments",
   "Cross-project todo assignments FOR THE AUTHENTICATED USER (you), grouped by priority. " +
   "Scope filters by time window. " +
+  "Returns { items, count, page } — each item has a priority field (high/medium/low). " +
   "Empty result means you have no todos in that scope — does not mean you have no todos at all. " +
   "For a different person's todos, use get_assigned_todos. " +
   "For overdue todos across all assignees, use get_overdue_todos.",
@@ -893,20 +919,35 @@ addTool("get_assignments",
       }
     };
     walk(parsed.data ?? parsed);
-    if (!toEnrich.length) return ok(raw);
+    if (!toEnrich.length) {
+      const items = flattenPriorityGroups(parsed.data ?? parsed);
+      return ok(JSON.stringify({ items, count: items.length, page: { has_more: false } }, null, 2));
+    }
 
     const details = await Promise.allSettled(
-      toEnrich.map(item => runBasecamp(["todos", "show", String(item.id)]))
+      toEnrich.map(item => {
+        if (item.type === "card") return runBasecamp(["cards", "show", String(item.id)]);
+        if (item.type === "step" && item.parent?.id)
+          return runBasecamp(["cards", "steps", String(item.parent.id)]);
+        if (item.type === "step") return Promise.resolve(null);
+        return runBasecamp(["todos", "show", String(item.id)]);
+      })
     );
     const createdAtMap = {};
     details.forEach((r, i) => {
-      if (r.status === "fulfilled") {
-        try {
-          const d = JSON.parse(r.value);
-          const todo = d.data ?? d;
-          if (todo.created_at) createdAtMap[toEnrich[i].id] = todo.created_at;
-        } catch {}
-      }
+      if (r.status !== "fulfilled" || r.value === null) return;
+      try {
+        const item = toEnrich[i];
+        const d = JSON.parse(r.value);
+        let src;
+        if (item.type === "step") {
+          const steps = Array.isArray(d.data) ? d.data : Array.isArray(d) ? d : [];
+          src = steps.find(s => s.id === item.id);
+        } else {
+          src = d.data ?? d;
+        }
+        if (src?.created_at) createdAtMap[item.id] = src.created_at;
+      } catch {}
     });
 
     const inject = (obj) => {
@@ -918,26 +959,35 @@ addTool("get_assignments",
     };
     inject(parsed.data ?? parsed);
 
-    return ok(JSON.stringify(parsed, null, 2));
+    const items = flattenPriorityGroups(parsed.data ?? parsed);
+    return ok(JSON.stringify({ items, count: items.length, page: { has_more: false } }, null, 2));
   }
 );
 
 addTool("get_assigned_todos",
   "Cross-project todos assigned to ANY person (not limited to yourself). " +
-  "Pass assignee name/ID or 'me'. Results are NOT priority-grouped (unlike get_assignments). " +
+  "Pass assignee name/ID or 'me'. Returns { items, count, page } — each item has a priority field (high/medium/low). " +
   "Use this for team-member overviews; use get_assignments for your own priority-grouped view.",
   { assignee: z.string().optional().describe("Person name, ID, or 'me' (defaults to current user)") },
   async ({ assignee }) => {
     const args = ["reports", "assigned"];
     if (assignee) args.push("--assignee", assignee);
-    return ok(await runBasecamp(args));
+    const raw = await runBasecamp(args);
+    try {
+      const parsed = JSON.parse(raw);
+      const items = flattenPriorityGroups(parsed.data ?? parsed);
+      return ok(JSON.stringify({ items, count: items.length, page: { has_more: false } }, null, 2));
+    } catch {
+      return ok(raw);
+    }
   }
 );
 
 addTool("get_overdue_todos",
   "Get overdue todos across all projects and all assignees (not filtered to the current user). " +
   "For your own overdue todos only, use get_assignments with scope='overdue' instead. " +
-  "Use assignee to filter by person (name, ID, or 'me'), and project to scope to one project.",
+  "Use assignee to filter by person (name, ID, or 'me'), and project to scope to one project. " +
+  "Returns { items, count, page } — each item has a priority field (high/medium/low).",
   {
     project: z.string().optional().describe("Project ID or name"),
     assignee: z.string().optional().describe("Filter by assignee: name, ID, or 'me'"),
@@ -946,7 +996,15 @@ addTool("get_overdue_todos",
     const args = ["reports", "overdue"];
     if (project) args.push("--project", project);
     const raw = await runBasecamp(args);
-    if (!assignee) return ok(raw);
+    if (!assignee) {
+      try {
+        const parsed = JSON.parse(raw);
+        const items = flattenPriorityGroups(parsed.data ?? parsed);
+        return ok(JSON.stringify({ items, count: items.length, page: { has_more: false } }, null, 2));
+      } catch {
+        return ok(raw);
+      }
+    }
 
     let matchId = null;
     if (assignee === "me") {
@@ -970,7 +1028,8 @@ addTool("get_overdue_todos",
         )
       );
     }
-    return ok(JSON.stringify({ ...envelope, data: filtered }, null, 2));
+    const items = flattenPriorityGroups(filtered);
+    return ok(JSON.stringify({ items, count: items.length, page: { has_more: false } }, null, 2));
   }
 );
 
@@ -1027,6 +1086,8 @@ const SCOPE_TYPE_MAP = {
   "Upload": "upload",
 };
 
+const VALID_SEARCH_TYPES = new Set(Object.keys(SCOPE_TYPE_MAP));
+
 addTool("search",
   "Full-text search across all Basecamp content. " +
   "Note: search may miss recently created content or return incomplete results for some types. " +
@@ -1056,7 +1117,10 @@ addTool("search",
       return args;
     };
 
-    const targets = project_ids?.length ? project_ids : [null];
+    const targets = project_ids?.length
+      ? await Promise.all(project_ids.map(resolveProjectId))
+      : [null];
+    const displayTargets = project_ids ?? [null];
 
     if (!scopes) {
       // Single global search (no project filter): use non-lenient mode so a zero-result
@@ -1064,7 +1128,12 @@ addTool("search",
       if (targets.length === 1 && !project_ids) {
         try {
           const raw = await runBasecamp(buildArgs(null));
-          return ok(wrapPaginated(raw, { all, limit }));
+          const wrapped = JSON.parse(wrapPaginated(raw, { all, limit }));
+          if (Array.isArray(wrapped.items)) {
+            wrapped.items = wrapped.items.filter(item => item.type && VALID_SEARCH_TYPES.has(item.type));
+            wrapped.count = wrapped.items.length;
+          }
+          return ok(JSON.stringify(wrapped, null, 2));
         } catch (e) {
           const reason = e.stderr?.trim() || e.stdout?.trim() || e.message;
           return ok(JSON.stringify({ items: [], count: 0, page: { has_more: false }, warnings: reason ? [reason] : [] }, null, 2));
@@ -1081,9 +1150,9 @@ addTool("search",
           let parsed;
           try { parsed = JSON.parse(r.value); } catch { continue; }
           const items = Array.isArray(parsed.data) ? parsed.data : Array.isArray(parsed) ? parsed : [];
-          allItems.push(...items);
+          allItems.push(...items.filter(item => item.type && VALID_SEARCH_TYPES.has(item.type)));
         } else {
-          const pid = targets[i];
+          const pid = displayTargets[i];
           const reason = r.reason?.stderr?.trim() || r.reason?.stdout?.trim() || r.reason?.message || String(r.reason);
           warnings.push(`search in project '${pid}' failed: ${reason}`);
         }
@@ -1113,7 +1182,7 @@ addTool("search",
           }
         }
       } else {
-        const pid = targets[i];
+        const pid = displayTargets[i];
         const reason = r.reason?.stderr?.trim() || r.reason?.stdout?.trim() || r.reason?.message || String(r.reason);
         warnings.push(pid ? `search in project '${pid}' failed: ${reason}` : `search failed: ${reason}`);
       }
@@ -1162,7 +1231,8 @@ addTool("browse_content",
 addTool("get_timeline",
   "Get recent activity. Omit project for account-wide timeline. " +
   "Default returns up to 100 events; use all=true to fetch everything (slow on large accounts). " +
-  "Use since=<ISO timestamp> to fetch all events from a specific point in time — paginates automatically.",
+  "Use since=<ISO timestamp> to fetch events from a specific point in time. " +
+  "With since: limit is respected (has_more=true when more exist); use all=true to fetch exhaustively.",
   {
     project: z.string().optional().describe("Project ID or name (omit for account-wide)"),
     person: z.string().optional().describe("Person ID (filter to their activity)"),
@@ -1172,7 +1242,7 @@ addTool("get_timeline",
     all: z.boolean().optional().describe("Fetch all events (may be slow on large accounts)"),
     since: z.string().optional().describe(
       "ISO 8601 timestamp — return only events at or after this time. " +
-      "Paginates automatically; overrides limit/page/all. Backwards-compatible: omit for current behavior."
+      "Respects limit (default: all matching events). Use all=true to force exhaustive fetch."
     ),
   },
   async ({ project, person, me, limit, page, all, since }) => {
@@ -1189,13 +1259,14 @@ addTool("get_timeline",
 
     // since mode: paginate sequentially (newest-first), collect events >= since.
     // First page omits --page to match the CLI default view (avoids off-by-one with --page 1).
-    // Subsequent pages use --page N. Stop when a page is partial (<100 items) or contains
-    // items older than since (hitOlder), meaning we've exhausted the relevant range.
+    // Subsequent pages use --page N. Stop when a page is partial (<100 items), contains
+    // items older than since (hitOlder), or limit is reached (hitLimit).
     const sinceDate = new Date(since);
     const collected = [];
     let currentPage = 1;
+    let hitLimit = false;
 
-    while (true) {
+    outer: while (true) {
       const pageArgs = currentPage === 1
         ? [...baseArgs, "--limit", "100"]
         : [...baseArgs, "--limit", "100", "--page", String(currentPage)];
@@ -1209,6 +1280,10 @@ addTool("get_timeline",
       for (const item of items) {
         if (new Date(item.created_at) >= sinceDate) {
           collected.push(item);
+          if (!all && limit != null && collected.length >= limit) {
+            hitLimit = true;
+            break outer;
+          }
         } else {
           hitOlder = true;
         }
@@ -1220,7 +1295,7 @@ addTool("get_timeline",
     return ok(JSON.stringify({
       items: collected,
       count: collected.length,
-      page: { has_more: false, since_applied: since },
+      page: { has_more: hitLimit, since_applied: since },
     }, null, 2));
   }
 );

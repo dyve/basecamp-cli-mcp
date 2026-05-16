@@ -75,7 +75,7 @@ CLI `show` commands return full body fields. Verified at ~20 KB (200-line docume
 
 The official skill's `--agent --help` output describes tools individually, but the MCP tool descriptions must disambiguate sibling tools from the schema alone (an LLM has no way to run `--agent --help`). Key disambiguation added:
 
-- `get_assignments` vs `get_assigned_todos`: descriptions now state explicitly which is priority-grouped and which is cross-person
+- `get_assignments` vs `get_assigned_todos`: both return `{ items, count, page }` with `priority` field (high/medium/low) on each item; descriptions distinguish self vs. any-person scope
 - `list_messages` vs `list_chat_messages`: descriptions now say "MESSAGE BOARD" vs "Campfire CHAT"
 - `show_comment` vs `list_comments`: descriptions now state the relationship to parent recordings
 
