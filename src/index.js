@@ -40,16 +40,24 @@ const ENV = {
   ].filter(Boolean).join(":"),
 };
 
-async function runBasecamp(args, { markdown = false, jq = null } = {}) {
+async function runBasecamp(args, { markdown = false, jq = null, lenient = false } = {}) {
   const formatFlag = markdown ? "--md" : "--json";
   const allArgs = jq
     ? [...args, formatFlag, "--jq", jq]
     : [...args, formatFlag];
-  const { stdout } = await execFileAsync(BASECAMP_BIN, allArgs, {
-    env: ENV,
-    timeout: 30000,
-  });
-  return stdout.trim();
+  try {
+    const { stdout } = await execFileAsync(BASECAMP_BIN, allArgs, {
+      env: ENV,
+      timeout: 30000,
+    });
+    return stdout.trim();
+  } catch (e) {
+    if (lenient) {
+      const out = e.stdout?.trim();
+      if (out) { try { JSON.parse(out); return out; } catch {} }
+    }
+    throw e;
+  }
 }
 
 function ok(text) {
@@ -867,9 +875,50 @@ addTool("get_assignments",
       .describe("'all' (default), 'overdue', 'due_today', 'due_tomorrow', 'due_later_this_week', 'due_next_week', 'completed'"),
   },
   async ({ scope }) => {
-    if (!scope || scope === "all") return ok(await runBasecamp(["assignments"]));
-    if (scope === "completed") return ok(await runBasecamp(["assignments", "completed"]));
-    return ok(await runBasecamp(["assignments", "due", scope]));
+    let raw;
+    if (!scope || scope === "all") raw = await runBasecamp(["assignments"]);
+    else if (scope === "completed") raw = await runBasecamp(["assignments", "completed"]);
+    else raw = await runBasecamp(["assignments", "due", scope]);
+
+    let parsed;
+    try { parsed = JSON.parse(raw); } catch { return ok(raw); }
+
+    // Collect all todo-like items missing created_at for parallel enrichment
+    const toEnrich = [];
+    const walk = (obj) => {
+      if (Array.isArray(obj)) {
+        obj.forEach(item => { if (item?.id && !item.created_at) toEnrich.push(item); });
+      } else if (obj && typeof obj === "object") {
+        Object.values(obj).forEach(walk);
+      }
+    };
+    walk(parsed.data ?? parsed);
+    if (!toEnrich.length) return ok(raw);
+
+    const details = await Promise.allSettled(
+      toEnrich.map(item => runBasecamp(["todos", "show", String(item.id)]))
+    );
+    const createdAtMap = {};
+    details.forEach((r, i) => {
+      if (r.status === "fulfilled") {
+        try {
+          const d = JSON.parse(r.value);
+          const todo = d.data ?? d;
+          if (todo.created_at) createdAtMap[toEnrich[i].id] = todo.created_at;
+        } catch {}
+      }
+    });
+
+    const inject = (obj) => {
+      if (Array.isArray(obj)) {
+        obj.forEach(item => { if (item?.id && createdAtMap[item.id]) item.created_at = createdAtMap[item.id]; });
+      } else if (obj && typeof obj === "object") {
+        Object.values(obj).forEach(inject);
+      }
+    };
+    inject(parsed.data ?? parsed);
+
+    return ok(JSON.stringify(parsed, null, 2));
   }
 );
 
@@ -1011,7 +1060,7 @@ addTool("search",
 
     if (!scopes) {
       // Flat mode: run searches in parallel, merge items.
-      const settled = await Promise.allSettled(targets.map(pid => runBasecamp(buildArgs(pid))));
+      const settled = await Promise.allSettled(targets.map(pid => runBasecamp(buildArgs(pid), { lenient: true })));
       const warnings = [];
       const allItems = [];
       for (let i = 0; i < settled.length; i++) {
@@ -1039,7 +1088,7 @@ addTool("search",
     }
 
     // Scoped mode: run searches in parallel, group results by type.
-    const settled = await Promise.allSettled(targets.map(pid => runBasecamp(buildArgs(pid))));
+    const settled = await Promise.allSettled(targets.map(pid => runBasecamp(buildArgs(pid), { lenient: true })));
     const warnings = [];
     const hits_by_scope = Object.fromEntries(scopes.map(s => [s, []]));
     let anySearched = false;
@@ -1106,7 +1155,8 @@ addTool("browse_content",
 
 addTool("get_timeline",
   "Get recent activity. Omit project for account-wide timeline. " +
-  "Default returns up to 100 events; use all=true to fetch everything (slow on large accounts).",
+  "Default returns up to 100 events; use all=true to fetch everything (slow on large accounts). " +
+  "Use since=<ISO timestamp> to fetch all events from a specific point in time — paginates automatically.",
   {
     project: z.string().optional().describe("Project ID or name (omit for account-wide)"),
     person: z.string().optional().describe("Person ID (filter to their activity)"),
@@ -1114,15 +1164,54 @@ addTool("get_timeline",
     limit: z.number().int().optional().describe("Max results (default: 100)"),
     page: z.number().int().optional().describe("Page number (use with limit for manual pagination)"),
     all: z.boolean().optional().describe("Fetch all events (may be slow on large accounts)"),
+    since: z.string().optional().describe(
+      "ISO 8601 timestamp — return only events at or after this time. " +
+      "Paginates automatically; overrides limit/page/all. Backwards-compatible: omit for current behavior."
+    ),
   },
-  async ({ project, person, me, limit, page, all }) => {
-    const args = me ? ["timeline", "me"] : ["timeline"];
-    if (project) args.push("--in", project);
-    if (person) args.push("--person", person);
-    if (all) args.push("--all");
-    else if (limit != null) args.push("--limit", String(limit));
-    if (page != null) args.push("--page", String(page));
-    return ok(await runBasecamp(args));
+  async ({ project, person, me, limit, page, all, since }) => {
+    const baseArgs = me ? ["timeline", "me"] : ["timeline"];
+    if (project) baseArgs.push("--in", project);
+    if (person) baseArgs.push("--person", person);
+
+    if (!since) {
+      if (all) baseArgs.push("--all");
+      else if (limit != null) baseArgs.push("--limit", String(limit));
+      if (page != null) baseArgs.push("--page", String(page));
+      return ok(await runBasecamp(baseArgs));
+    }
+
+    // since mode: paginate sequentially (newest-first), collect events >= since
+    const sinceDate = new Date(since);
+    const collected = [];
+    let currentPage = 1;
+
+    while (true) {
+      const args = [...baseArgs, "--limit", "100", "--page", String(currentPage)];
+      let raw;
+      try { raw = await runBasecamp(args, { lenient: true }); } catch { break; }
+      let parsed;
+      try { parsed = JSON.parse(raw); } catch { break; }
+      const items = Array.isArray(parsed.data) ? parsed.data : Array.isArray(parsed) ? parsed : [];
+      if (!items.length) break;
+      let done = false;
+      for (const item of items) {
+        if (new Date(item.created_at) >= sinceDate) {
+          collected.push(item);
+        } else {
+          done = true;
+          break;
+        }
+      }
+      if (done || items.length < 100) break;
+      currentPage++;
+    }
+
+    return ok(JSON.stringify({
+      items: collected,
+      count: collected.length,
+      page: { has_more: false, since_applied: since },
+    }, null, 2));
   }
 );
 
