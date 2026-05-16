@@ -1059,7 +1059,19 @@ addTool("search",
     const targets = project_ids?.length ? project_ids : [null];
 
     if (!scopes) {
-      // Flat mode: run searches in parallel, merge items.
+      // Single global search (no project filter): use non-lenient mode so a zero-result
+      // CLI exit doesn't silently return partial/fallback stdout as real results.
+      if (targets.length === 1 && !project_ids) {
+        try {
+          const raw = await runBasecamp(buildArgs(null));
+          return ok(wrapPaginated(raw, { all, limit }));
+        } catch (e) {
+          const reason = e.stderr?.trim() || e.stdout?.trim() || e.message;
+          return ok(JSON.stringify({ items: [], count: 0, page: { has_more: false }, warnings: reason ? [reason] : [] }, null, 2));
+        }
+      }
+
+      // Multi-project flat mode: run in parallel, merge items, report per-project failures.
       const settled = await Promise.allSettled(targets.map(pid => runBasecamp(buildArgs(pid), { lenient: true })));
       const warnings = [];
       const allItems = [];
@@ -1072,15 +1084,9 @@ addTool("search",
           allItems.push(...items);
         } else {
           const pid = targets[i];
-          const reason = r.reason?.stderr?.trim() || r.reason?.message || String(r.reason);
-          warnings.push(pid ? `search in project '${pid}' failed: ${reason}` : `search failed: ${reason}`);
+          const reason = r.reason?.stderr?.trim() || r.reason?.stdout?.trim() || r.reason?.message || String(r.reason);
+          warnings.push(`search in project '${pid}' failed: ${reason}`);
         }
-      }
-      if (targets.length === 1 && !project_ids) {
-        // Single global search — use standard wrapPaginated logic.
-        const raw = settled[0].status === "fulfilled" ? settled[0].value : null;
-        if (!raw) return ok(JSON.stringify({ items: [], count: 0, page: { has_more: false }, warnings }, null, 2));
-        return ok(wrapPaginated(raw, { all, limit }));
       }
       const result = { items: allItems, count: allItems.length, page: { has_more: false } };
       if (warnings.length) result.warnings = warnings;
@@ -1108,7 +1114,7 @@ addTool("search",
         }
       } else {
         const pid = targets[i];
-        const reason = r.reason?.stderr?.trim() || r.reason?.message || String(r.reason);
+        const reason = r.reason?.stderr?.trim() || r.reason?.stdout?.trim() || r.reason?.message || String(r.reason);
         warnings.push(pid ? `search in project '${pid}' failed: ${reason}` : `search failed: ${reason}`);
       }
     }
@@ -1178,32 +1184,36 @@ addTool("get_timeline",
       if (all) baseArgs.push("--all");
       else if (limit != null) baseArgs.push("--limit", String(limit));
       if (page != null) baseArgs.push("--page", String(page));
-      return ok(await runBasecamp(baseArgs));
+      return ok(wrapPaginated(await runBasecamp(baseArgs), { all, limit }));
     }
 
-    // since mode: paginate sequentially (newest-first), collect events >= since
+    // since mode: paginate sequentially (newest-first), collect events >= since.
+    // First page omits --page to match the CLI default view (avoids off-by-one with --page 1).
+    // Subsequent pages use --page N. Stop when a page is partial (<100 items) or contains
+    // items older than since (hitOlder), meaning we've exhausted the relevant range.
     const sinceDate = new Date(since);
     const collected = [];
     let currentPage = 1;
 
     while (true) {
-      const args = [...baseArgs, "--limit", "100", "--page", String(currentPage)];
+      const pageArgs = currentPage === 1
+        ? [...baseArgs, "--limit", "100"]
+        : [...baseArgs, "--limit", "100", "--page", String(currentPage)];
       let raw;
-      try { raw = await runBasecamp(args, { lenient: true }); } catch { break; }
+      try { raw = await runBasecamp(pageArgs, { lenient: true }); } catch { break; }
       let parsed;
       try { parsed = JSON.parse(raw); } catch { break; }
       const items = Array.isArray(parsed.data) ? parsed.data : Array.isArray(parsed) ? parsed : [];
       if (!items.length) break;
-      let done = false;
+      let hitOlder = false;
       for (const item of items) {
         if (new Date(item.created_at) >= sinceDate) {
           collected.push(item);
         } else {
-          done = true;
-          break;
+          hitOlder = true;
         }
       }
-      if (done || items.length < 100) break;
+      if (hitOlder || items.length < 100) break;
       currentPage++;
     }
 
