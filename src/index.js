@@ -186,7 +186,8 @@ addTool("update_project", "Update a project's name or description",
     const args = ["projects", "update", id];
     if (name) args.push("--name", name);
     if (description) args.push("--description", description);
-    return ok(await runBasecamp(args));
+    await runBasecamp(args);
+    return ok(await runBasecamp(["projects", "show", id]));
   }
 );
 
@@ -210,7 +211,11 @@ addTool("list_todos",
     const args = ["todos", "list"];
     if (project) args.push("--in", project);
     if (list) args.push("--list", list);
-    // CLI --status flag silently ignored in v0.7.2; filter client-side instead
+    // WORKAROUND: `basecamp todos list --status` is silently ignored in CLI v0.7.2.
+    // We fetch with --all and filter client-side. Side effect: pagination is disabled when status is used.
+    // To verify if fixed: run `basecamp todos list --status completed --json` and check whether
+    // results are pre-filtered (completed only) vs returning all todos. If fixed, remove the
+    // client-side filter below and re-enable the page param when status is provided.
     if (assignee) args.push("--assignee", assignee);
     if (overdue) args.push("--overdue");
     if (all || status) args.push("--all");
@@ -518,12 +523,7 @@ addTool("move_cards",
         return runBasecamp(args);
       })
     );
-    const succeeded = [], failed = [];
-    results.forEach((r, i) => {
-      if (r.status === "fulfilled") succeeded.push(moves[i].id);
-      else failed.push({ id: moves[i].id, reason: r.reason?.stderr?.trim() || r.reason?.message });
-    });
-    return ok(JSON.stringify({ succeeded, failed }, null, 2));
+    return ok(JSON.stringify(collectResults(moves.map(m => m.id), results), null, 2));
   }
 );
 
