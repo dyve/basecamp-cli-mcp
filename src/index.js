@@ -40,6 +40,10 @@ const ENV = {
   ].filter(Boolean).join(":"),
 };
 
+// Uses execFile (not exec) — args are passed directly to the Go binary, no shell involved.
+// Node.js error messages display args space-joined without quotes (e.g. "basecamp search foo bar
+// --project 123"), which looks like a shell-quoting issue but is purely a display artifact.
+// Multi-word arguments (queries, project names) are received intact by the CLI.
 async function runBasecamp(args, { markdown = false, jq = null, lenient = false } = {}) {
   const formatFlag = markdown ? "--md" : "--json";
   const allArgs = jq
