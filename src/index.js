@@ -931,8 +931,8 @@ addTool("get_assignments",
     const details = await Promise.allSettled(
       toEnrich.map(item => {
         if (item.type === "card") return runBasecamp(["cards", "show", String(item.id)]);
-        if (item.type === "step" && item.parent?.id)
-          return runBasecamp(["cards", "steps", String(item.parent.id)]);
+        if (item.type === "step" && item.parent?.id && item.bucket?.id)
+          return runBasecamp(["cards", "steps", String(item.parent.id), "--project", String(item.bucket.id)]);
         if (item.type === "step") return Promise.resolve(null);
         return runBasecamp(["todos", "show", String(item.id)]);
       })
@@ -954,6 +954,13 @@ addTool("get_assignments",
       } catch {}
     });
 
+    const warnings = [];
+    for (const item of toEnrich) {
+      if (!createdAtMap[item.id]) {
+        warnings.push(`created_at unavailable for ${item.type ?? "todo"} ${item.id}`);
+      }
+    }
+
     const inject = (obj) => {
       if (Array.isArray(obj)) {
         obj.forEach(item => { if (item?.id && createdAtMap[item.id]) item.created_at = createdAtMap[item.id]; });
@@ -964,7 +971,9 @@ addTool("get_assignments",
     inject(parsed.data ?? parsed);
 
     const items = flattenPriorityGroups(parsed.data ?? parsed);
-    return ok(JSON.stringify({ items, count: items.length, page: { has_more: false } }, null, 2));
+    const result = { items, count: items.length, page: { has_more: false } };
+    if (warnings.length) result.warnings = warnings;
+    return ok(JSON.stringify(result, null, 2));
   }
 );
 
@@ -1132,11 +1141,30 @@ addTool("search",
       if (targets.length === 1 && !project_ids) {
         try {
           const raw = await runBasecamp(buildArgs(null));
+          let rawParsed;
+          try { rawParsed = JSON.parse(raw); } catch {}
+          const apiSummary = rawParsed?.summary ?? "";
+
           const wrapped = JSON.parse(wrapPaginated(raw, { all, limit }));
           if (Array.isArray(wrapped.items)) {
             wrapped.items = wrapped.items.filter(item => item.type && VALID_SEARCH_TYPES.has(item.type));
             wrapped.count = wrapped.items.length;
           }
+
+          // Basecamp returns its 10000-item cap when a query has no specific matches,
+          // returning recent content as fallback. Detect by checking summary count
+          // against the cap, then verifying no returned item title/subject contains any query word.
+          const summaryCount = parseInt(apiSummary.match(/^(\d+) results/)?.[1] ?? "0", 10);
+          if (summaryCount >= 10000 && wrapped.count > 0) {
+            const queryTerms = query.toLowerCase().split(/\s+/).filter(w => w.length >= 2);
+            const hasRealMatch = queryTerms.length > 0 && wrapped.items.some(item =>
+              queryTerms.some(w => `${item.title ?? ""} ${item.subject ?? ""}`.toLowerCase().includes(w))
+            );
+            if (!hasRealMatch) {
+              return ok(JSON.stringify({ items: [], count: 0, page: { has_more: false } }, null, 2));
+            }
+          }
+
           return ok(JSON.stringify(wrapped, null, 2));
         } catch (e) {
           const reason = e.stderr?.trim() || e.stdout?.trim() || e.message;
