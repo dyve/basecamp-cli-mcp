@@ -228,6 +228,18 @@ addTool("update_project", "Update a project's name or description",
   }
 );
 
+addTool("create_project", "Create a new Basecamp project",
+  {
+    name: z.string().describe("Project name"),
+    description: z.string().optional().describe("Project description (shown on the project tile)"),
+  },
+  async ({ name, description }) => {
+    const args = ["projects", "create", name];
+    if (description) args.push("--description", description);
+    return ok(await runBasecamp(args));
+  }
+);
+
 // ── TODOS ────────────────────────────────────────────────────────────────────
 
 addTool("list_todos",
