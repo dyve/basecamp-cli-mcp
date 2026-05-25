@@ -185,6 +185,10 @@ Do not make completeness claims ("you have N items") unless `has_more` is `false
 
 Most tools accept either an ID or a Basecamp URL for their primary ID parameter — check the parameter description. Call `parse_url` first when you receive a URL you haven't already parsed: it extracts `project_id` and other context.
 
+`parse_url` (`basecamp url parse`) is **local-only** — pure regex, no API call, no auth required. Use it freely without worrying about rate limits or latency.
+
+For non-project resources (todos, messages, cards, etc.), `basecamp show <URL>` fetches the resource directly in one server call, skipping a separate `parse_url` + typed `show_*` step. For project URLs, `basecamp show` does not work — use `parse_url` to extract the `project_id`, then call `show_project`.
+
 ### @mentions
 
 Content fields (todo descriptions, messages, comments, chat) support Markdown and @mentions. Prefer `[@Name](mention:SGID)` — it requires no extra API calls and works deterministically.
