@@ -63,6 +63,14 @@ Steps are structurally identical to todos and used for assigning subtasks on car
 
 ### 8. Scoped and project-filtered search
 
+**Performance warning:** bare `search(query)` with no scopes or project_ids runs a global API call and regularly hits the 30-second timeout. The MCP applies a default limit of 20 and adds a `page.note` warning, but this is a safety net — callers should supply explicit constraints:
+
+- `scopes` — limit to content types (fastest when you know the type)
+- `project_ids` — limit to one or more projects (parallel per-project calls, more resilient)
+- `limit` — explicit bound as a last resort
+
+Prefer `browse_content` when the content type is known — it is exhaustive and faster than search.
+
 `search(scopes=[...])` returns `{ scopes_searched, hits_by_scope, warnings }` grouped by content type instead of a flat list. Implemented as a single CLI call with client-side grouping (the CLI search command has no `--type` flag). Non-scope types (`Gauge`, `Kanban::Step`, etc.) are silently dropped from results.
 
 `search(project_ids=[...])` runs one search per project in parallel (using the CLI `--project` flag) and merges results. Per-project failures surface in `warnings` rather than aborting the search. Combining `scopes` and `project_ids` returns a merged scoped result across all specified projects.
@@ -147,7 +155,7 @@ Always prefer the named tools over `basecamp_run`. The routing table:
 | List documents (paginated) | `list_documents` |
 | List uploads (paginated) | `list_uploads` |
 | Browse content by type | `browse_content` |
-| Full-text search | `search` |
+| Full-text search (always add scopes/project_ids/limit) | `search` |
 | Recent activity | `get_timeline` |
 | Chat | `post_chat_message` / `list_chat_messages` |
 | Notifications | `list_notifications` / `mark_notifications_read` (bulk, partial-success shape) |

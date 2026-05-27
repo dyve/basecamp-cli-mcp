@@ -1114,9 +1114,10 @@ const SCOPE_TYPE_MAP = {
 const VALID_SEARCH_TYPES = new Set(Object.keys(SCOPE_TYPE_MAP));
 
 addTool("search",
-  "Full-text search across all Basecamp content. " +
-  "Note: search may miss recently created content or return incomplete results for some types. " +
-  "If search misses known content, use browse_content to list by type instead — it is exhaustive. " +
+  "Full-text search across Basecamp content. " +
+  "WARNING: bare search with no scopes or project_ids runs a global API call that is slow and may timeout — " +
+  "always narrow with at least one of: scopes (content types), project_ids, or an explicit limit. " +
+  "Prefer browse_content when the content type is known — it is exhaustive and faster. " +
   "Without scopes: returns paginated results — check page.has_more. " +
   "With scopes: returns { scopes_searched, hits_by_scope, warnings } grouped by content type. " +
   "With project_ids: runs one search per project in parallel and merges results; per-project failures appear in warnings.",
@@ -1133,11 +1134,13 @@ addTool("search",
     sort: z.enum(["created_at", "updated_at"]).optional().describe("Sort order (default: relevance)"),
   },
   async ({ query, scopes, project_ids, all, limit, sort }) => {
+    const useDefaultLimit = !scopes && !project_ids?.length && !all && limit == null;
     const buildArgs = (projectId) => {
       const args = ["search", query];
       if (projectId) args.push("--project", projectId);
       if (all) args.push("--all");
       else if (limit != null) args.push("--limit", String(limit));
+      else if (useDefaultLimit) args.push("--limit", "20");
       if (sort) args.push("--sort", sort);
       return args;
     };
@@ -1157,10 +1160,14 @@ addTool("search",
           try { rawParsed = JSON.parse(raw); } catch {}
           const apiSummary = rawParsed?.summary ?? "";
 
-          const wrapped = JSON.parse(wrapPaginated(raw, { all, limit }));
+          const effectiveLimit = limit ?? (useDefaultLimit ? 20 : null);
+          const wrapped = JSON.parse(wrapPaginated(raw, { all, limit: effectiveLimit }));
           if (Array.isArray(wrapped.items)) {
             wrapped.items = wrapped.items.filter(item => item.type && VALID_SEARCH_TYPES.has(item.type));
             wrapped.count = wrapped.items.length;
+          }
+          if (useDefaultLimit && wrapped.page) {
+            wrapped.page.note = "Unscoped search capped at 20 results to avoid timeout. Add scopes, project_ids, or an explicit limit to control.";
           }
 
           // Basecamp returns its 10000-item cap when a query has no specific matches,
