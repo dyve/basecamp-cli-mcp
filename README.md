@@ -30,16 +30,18 @@ Add to your MCP client config (e.g. `~/Library/Application Support/Claude/claude
 
 The server provides typed tools for the most common Basecamp operations:
 
-- **Projects** — `list_projects`, `show_project`
-- **Todos** — `list_todos`, `show_todo`, `create_todo`, `update_todo`, `complete_todo`, `reopen_todo`, `assign_todo`
+- **Projects** — `list_projects`, `show_project`, `create_project`, `update_project`
+- **Todos** — `list_todos`, `show_todo`, `create_todo`, `update_todo`, `complete_todos`, `reopen_todos`, `assign_todos`
 - **Todolists** — `list_todolists`, `create_todolist`
-- **Messages** — `list_messages`, `show_message`, `create_message`
-- **Cards** — `list_cards`, `list_card_columns`, `show_card`, `create_card`, `move_card`, `update_card`
+- **Messages** — `list_messages`, `show_message`, `create_message`, `update_message`
+- **Cards** — `list_cards`, `list_card_columns`, `show_card`, `create_card`, `move_card`, `move_cards`, `update_card`
 - **Card steps** — `list_steps`, `create_step`, `complete_step`, `uncomplete_step`, `update_step`, `move_step`, `delete_step`
-- **Comments** — `list_comments`, `add_comment`
+- **Comments** — `list_comments`, `show_comment`, `add_comment`
+- **Docs & Files** — `list_files`, `show_file`, `list_documents`, `list_uploads`, `browse_content`
 - **Chat** — `list_chat_messages`, `post_chat_message`
-- **Assignments & reports** — `get_assignments`, `get_assigned_todos`, `get_overdue_todos`, `get_schedule`
-- **Notifications** — `list_notifications`, `mark_notification_read`
+- **Schedule** — `list_schedule_entries`, `get_schedule`
+- **Assignments & reports** — `get_assignments`, `get_assigned_todos`, `get_overdue_todos`
+- **Notifications** — `list_notifications`, `mark_notifications_read`
 - **Search** — `search`
 - **Timeline** — `get_timeline`
 - **People** — `list_people`, `get_me`
@@ -57,13 +59,15 @@ If you use this server with Claude Code and want to stop being prompted for ever
   "permissions": {
     "allow": [
       "mcp__basecamp__add_comment",
-      "mcp__basecamp__assign_todo",
+      "mcp__basecamp__assign_todos",
       "mcp__basecamp__auth_status",
       "mcp__basecamp__basecamp_run",
+      "mcp__basecamp__browse_content",
       "mcp__basecamp__complete_step",
-      "mcp__basecamp__complete_todo",
+      "mcp__basecamp__complete_todos",
       "mcp__basecamp__create_card",
       "mcp__basecamp__create_message",
+      "mcp__basecamp__create_project",
       "mcp__basecamp__create_step",
       "mcp__basecamp__create_todo",
       "mcp__basecamp__create_todolist",
@@ -79,6 +83,8 @@ If you use this server with Claude Code and want to stop being prompted for ever
       "mcp__basecamp__list_cards",
       "mcp__basecamp__list_chat_messages",
       "mcp__basecamp__list_comments",
+      "mcp__basecamp__list_documents",
+      "mcp__basecamp__list_files",
       "mcp__basecamp__list_messages",
       "mcp__basecamp__list_notifications",
       "mcp__basecamp__list_people",
@@ -87,19 +93,25 @@ If you use this server with Claude Code and want to stop being prompted for ever
       "mcp__basecamp__list_steps",
       "mcp__basecamp__list_todolists",
       "mcp__basecamp__list_todos",
-      "mcp__basecamp__mark_notification_read",
+      "mcp__basecamp__list_uploads",
+      "mcp__basecamp__mark_notifications_read",
       "mcp__basecamp__move_card",
+      "mcp__basecamp__move_cards",
       "mcp__basecamp__move_step",
       "mcp__basecamp__parse_url",
       "mcp__basecamp__post_chat_message",
-      "mcp__basecamp__reopen_todo",
+      "mcp__basecamp__reopen_todos",
       "mcp__basecamp__search",
       "mcp__basecamp__show_card",
+      "mcp__basecamp__show_comment",
+      "mcp__basecamp__show_file",
       "mcp__basecamp__show_message",
       "mcp__basecamp__show_project",
       "mcp__basecamp__show_todo",
       "mcp__basecamp__uncomplete_step",
       "mcp__basecamp__update_card",
+      "mcp__basecamp__update_message",
+      "mcp__basecamp__update_project",
       "mcp__basecamp__update_step",
       "mcp__basecamp__update_todo"
     ]
