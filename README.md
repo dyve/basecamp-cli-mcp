@@ -1,6 +1,6 @@
 # basecamp-cli-mcp
 
-**basecamp-cli-mcp** is a local MCP server that wraps the [Basecamp CLI](https://github.com/basecamp/basecamp-cli) so that Claude Desktop and Cowork can interact with Basecamp via MCP tools. It mirrors [the Basecamp skill](https://github.com/basecamp/basecamp-cli/tree/main/skills) — the official skill for Claude Code — and extends it where useful.
+**basecamp-cli-mcp** is a local MCP server that wraps the [Basecamp CLI](https://github.com/basecamp/basecamp-cli) so that Claude Desktop and Cowork can interact with Basecamp via MCP tools. It provides full Basecamp API coverage as well-typed MCP tools with a consistent, agent-oriented interface.
 
 ## Requirements
 
@@ -37,7 +37,7 @@ The server provides typed tools for the most common Basecamp operations:
 - **Cards** — `list_cards`, `list_card_columns`, `show_card`, `create_card`, `move_card`, `move_cards`, `update_card`
 - **Card steps** — `list_steps`, `create_step`, `complete_step`, `uncomplete_step`, `update_step`, `move_step`, `delete_step`
 - **Comments** — `list_comments`, `show_comment`, `add_comment`
-- **Docs & Files** — `list_files`, `show_file`, `list_documents`, `list_uploads`, `browse_content`
+- **Docs & Files** — `list_files`, `show_file`, `list_documents`, `list_uploads`, `create_document`, `update_document`, `browse_content`
 - **Chat** — `list_chat_messages`, `post_chat_message`
 - **Schedule** — `list_schedule_entries`, `get_schedule`
 - **Assignments & reports** — `get_assignments`, `get_assigned_todos`, `get_overdue_todos`
@@ -70,6 +70,7 @@ If you use this server with Claude Code and want to stop being prompted for ever
       "mcp__basecamp__create_project",
       "mcp__basecamp__create_step",
       "mcp__basecamp__create_todo",
+      "mcp__basecamp__create_document",
       "mcp__basecamp__create_todolist",
       "mcp__basecamp__delete_step",
       "mcp__basecamp__get_assigned_todos",
@@ -110,6 +111,7 @@ If you use this server with Claude Code and want to stop being prompted for ever
       "mcp__basecamp__show_todo",
       "mcp__basecamp__uncomplete_step",
       "mcp__basecamp__update_card",
+      "mcp__basecamp__update_document",
       "mcp__basecamp__update_message",
       "mcp__basecamp__update_project",
       "mcp__basecamp__update_step",
