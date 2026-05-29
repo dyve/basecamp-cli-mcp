@@ -722,7 +722,7 @@ addTool("delete_step", "Permanently delete a step from a card",
 
 // ── COMMENTS ─────────────────────────────────────────────────────────────────
 
-addTool("list_comments", "List comments on a Basecamp recording (todo, message, card, etc.). Returns paginated results — check page.has_more.",
+addTool("list_comments", "List comments on a Basecamp recording (todo, message, card, document, upload, etc.). Returns paginated results — check page.has_more.",
   {
     id: z.string().describe("Recording ID or Basecamp URL"),
     project: z.string().optional().describe("Project ID or name"),
@@ -762,7 +762,7 @@ addTool("show_comment",
 );
 
 addTool("add_comment",
-  "Add a comment to any Basecamp item. Comments are flat — always comment on the parent recording, not on a comment ID. " +
+  "Add a comment to any Basecamp item (todo, message, card, document, upload, etc.). Comments are flat — always comment on the parent recording, not on a comment ID. " +
   "Supports Markdown and @mentions. For @mentions use [@Name](mention:SGID) — requires no extra API calls.",
   {
     id: z.string().describe("Recording ID (parent item, NOT a comment ID). If you have a URL with a comment fragment, parse the URL first and use the recording_id."),
@@ -828,6 +828,49 @@ addTool("list_documents",
     else if (limit != null) args.push("--limit", String(limit));
     if (page != null) args.push("--page", String(page));
     return ok(wrapPaginated(await runBasecamp(args), { all, limit }));
+  }
+);
+
+addTool("create_document",
+  "Create a new document in a project's Docs & Files. " +
+  "Content supports Markdown. Omit folder to create in project root.",
+  {
+    title: z.string().describe("Document title"),
+    content: z.string().optional().describe("Document body (Markdown supported)"),
+    project: z.string().describe("Project ID or name"),
+    folder: z.string().optional().describe("Folder (vault) ID — omit for project root"),
+    draft: z.boolean().optional().describe("Create as draft (default: published)"),
+    subscribe: z.string().optional().describe("Subscribe people (comma-separated names, emails, or IDs)"),
+    no_subscribe: z.boolean().optional().describe("Create silently, without notifying anyone"),
+  },
+  async ({ title, content, project, folder, draft, subscribe, no_subscribe }) => {
+    const args = ["docs", "documents", "create", title];
+    if (content) args.push(content);
+    args.push("--in", project);
+    if (folder) args.push("--vault", folder);
+    if (draft) args.push("--draft");
+    if (no_subscribe) args.push("--no-subscribe");
+    else if (subscribe) args.push("--subscribe", subscribe);
+    return ok(await runBasecamp(args));
+  }
+);
+
+addTool("update_document",
+  "Update an existing document's title or content. " +
+  "Accepts a document ID or full Basecamp URL. " +
+  "Content supports Markdown and replaces the full body — not an append. Partial update (title only or content only) is supported.",
+  {
+    id: z.string().describe("Document ID or full Basecamp URL"),
+    project: z.string().optional().describe("Project ID or name (required when passing a bare ID)"),
+    title: z.string().optional().describe("New title"),
+    content: z.string().optional().describe("New body (Markdown supported; replaces existing content)"),
+  },
+  async ({ id, project, title, content }) => {
+    const args = ["docs", "update", id];
+    if (project) args.push("--in", project);
+    if (title) args.push("--title", title);
+    if (content) args.push("--content", content);
+    return ok(await runBasecamp(args));
   }
 );
 
