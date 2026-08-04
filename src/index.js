@@ -170,13 +170,14 @@ async function resolveProjectId(nameOrId) {
 
 // Flattens { high: [...], medium: [...], low: [...] } into a flat array with a `priority` field on each item.
 // Passes flat arrays through unchanged.
-function flattenPriorityGroups(data) {
+// Flattens a response grouped into named buckets (e.g. { priorities: [...], non_priorities: [...] }
+// or { over_a_week_late: [...], under_a_week_late: [...] }) into one array, tagging each item with
+// the bucket it came from under `fieldName`. Pass-through if already flat.
+function flattenGroupedResponse(data, fieldName = "group") {
   if (Array.isArray(data)) return data;
   const items = [];
-  const knownOrder = ["high", "medium", "low"];
-  const keys = [...new Set([...knownOrder, ...Object.keys(data)])].filter(k => Array.isArray(data[k]));
-  for (const priority of keys) {
-    items.push(...data[priority].map(item => ({ ...item, priority })));
+  for (const key of Object.keys(data).filter(k => Array.isArray(data[k]))) {
+    items.push(...data[key].map(item => ({ ...item, [fieldName]: key })));
   }
   return items;
 }
@@ -950,9 +951,10 @@ addTool("post_chat_message",
 // ── ASSIGNMENTS & REPORTS ─────────────────────────────────────────────────────
 
 addTool("get_assignments",
-  "Cross-project todo assignments FOR THE AUTHENTICATED USER (you), grouped by priority. " +
+  "Cross-project todo assignments FOR THE AUTHENTICATED USER (you). " +
   "Scope filters by time window. " +
-  "Returns { items, count, page } — each item has a priority field (high/medium/low). " +
+  "Returns { items, count, page }. For scope='all' (default), each item has a `group` field: " +
+  "'priorities' (starred / added to Up Next) or 'non_priorities'. Other scopes (due dates, completed) return a flat list with no `group` field. " +
   "Empty result means you have no todos in that scope — does not mean you have no todos at all. " +
   "For a different person's todos, use get_assigned_todos. " +
   "For overdue todos across all assignees, use get_overdue_todos.",
@@ -981,7 +983,7 @@ addTool("get_assignments",
     };
     walk(parsed.data ?? parsed);
     if (!toEnrich.length) {
-      const items = flattenPriorityGroups(parsed.data ?? parsed);
+      const items = flattenGroupedResponse(parsed.data ?? parsed, "group");
       return ok(JSON.stringify({ items, count: items.length, page: { has_more: false } }, null, 2));
     }
 
@@ -1027,7 +1029,7 @@ addTool("get_assignments",
     };
     inject(parsed.data ?? parsed);
 
-    const items = flattenPriorityGroups(parsed.data ?? parsed);
+    const items = flattenGroupedResponse(parsed.data ?? parsed, "group");
     const result = { items, count: items.length, page: { has_more: false } };
     if (warnings.length) result.warnings = warnings;
     return ok(JSON.stringify(result, null, 2));
@@ -1036,8 +1038,8 @@ addTool("get_assignments",
 
 addTool("get_assigned_todos",
   "Cross-project todos assigned to ANY person (not limited to yourself). " +
-  "Pass assignee name/ID or 'me'. Returns { items, count, page } — each item has a priority field (high/medium/low). " +
-  "Use this for team-member overviews; use get_assignments for your own priority-grouped view.",
+  "Pass assignee name/ID or 'me'. Returns { items, count, page } — a flat list, no priority/group field. " +
+  "Use this for team-member overviews; use get_assignments for your own view (which does include a priorities/non_priorities group).",
   { assignee: z.string().optional().describe("Person name, ID, or 'me' (defaults to current user)") },
   async ({ assignee }) => {
     const args = ["reports", "assigned"];
@@ -1045,7 +1047,8 @@ addTool("get_assigned_todos",
     const raw = await runBasecamp(args);
     try {
       const parsed = JSON.parse(raw);
-      const items = flattenPriorityGroups(parsed.data ?? parsed);
+      const data = parsed.data ?? parsed;
+      const items = Array.isArray(data) ? data : Array.isArray(data.todos) ? data.todos : [];
       return ok(JSON.stringify({ items, count: items.length, page: { has_more: false } }, null, 2));
     } catch {
       return ok(raw);
@@ -1057,7 +1060,8 @@ addTool("get_overdue_todos",
   "Get overdue todos across all projects and all assignees (not filtered to the current user). " +
   "For your own overdue todos only, use get_assignments with scope='overdue' instead. " +
   "Use assignee to filter by person (name, ID, or 'me'), and project to scope to one project. " +
-  "Returns { items, count, page } — each item has a priority field (high/medium/low).",
+  "Returns { items, count, page } — each item has a `lateness` field: " +
+  "'under_a_week_late', 'over_a_week_late', 'over_a_month_late', or 'over_three_months_late'.",
   {
     project: z.string().optional().describe("Project ID or name"),
     assignee: z.string().optional().describe("Filter by assignee: name, ID, or 'me'"),
@@ -1069,7 +1073,7 @@ addTool("get_overdue_todos",
     if (!assignee) {
       try {
         const parsed = JSON.parse(raw);
-        const items = flattenPriorityGroups(parsed.data ?? parsed);
+        const items = flattenGroupedResponse(parsed.data ?? parsed, "lateness");
         return ok(JSON.stringify({ items, count: items.length, page: { has_more: false } }, null, 2));
       } catch {
         return ok(raw);
@@ -1098,7 +1102,7 @@ addTool("get_overdue_todos",
         )
       );
     }
-    const items = flattenPriorityGroups(filtered);
+    const items = flattenGroupedResponse(filtered, "lateness");
     return ok(JSON.stringify({ items, count: items.length, page: { has_more: false } }, null, 2));
   }
 );
