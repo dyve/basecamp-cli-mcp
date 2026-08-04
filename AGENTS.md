@@ -55,9 +55,9 @@ Wraps `recordings list --type TYPE`. Unlike `search`, it is exhaustive for a giv
 
 `assign_todos` accepts a per-item shape `{ id, assignee_ids[], due_date? }` so each todo can have independent assignees and an optional due date update in one call.
 
-### 5. ~~`--comments` on show tools~~
+### 5. `--comments` on show tools
 
-The SKILL.md documents `--comments` / `--all-comments` / `--no-comments` flags on typed show commands, but these are not present in CLI v0.7.2. Use `list_comments` as a follow-up call.
+`--comments` / `--all-comments` / `--no-comments` flags landed on typed show commands in CLI v0.8.0 (not present in v0.7.2). With `--json`, comments are still opt-in — pass `--comments` explicitly to get a `comments` field on the show response. `list_comments` remains the way to page through more than the default 100.
 
 ### 6. Card update and card steps
 

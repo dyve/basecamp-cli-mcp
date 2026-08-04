@@ -260,23 +260,25 @@ addTool("list_todos",
     const args = ["todos", "list"];
     if (project) args.push("--in", project);
     if (list) args.push("--list", list);
-    // WORKAROUND: `basecamp todos list --status` is silently ignored in CLI v0.7.2.
-    // We fetch with --all and filter client-side. Side effect: pagination is disabled when status is used.
-    // To verify if fixed: run `basecamp todos list --status completed --json` and check whether
-    // results are pre-filtered (completed only) vs returning all todos. If fixed, remove the
-    // client-side filter below and re-enable the page param when status is provided.
+    if (status) args.push("--status", status);
     if (assignee) args.push("--assignee", assignee);
     if (overdue) args.push("--overdue");
-    if (all || status) args.push("--all");
+    if (all) args.push("--all");
     else if (limit != null) args.push("--limit", String(limit));
-    if (!status && page != null) args.push("--page", String(page));
+    if (page != null) args.push("--page", String(page));
     const raw = await runBasecamp(args);
-    if (!status) return ok(wrapPaginated(raw, { all, limit }));
+    if (project) return ok(wrapPaginated(raw, { all, limit }));
+    // Account-wide (no --in): CLI groups results by bucket — [{ bucket, todos: [...] }] — not a flat array. Flatten.
     let parsed;
     try { parsed = JSON.parse(raw); } catch { return ok(raw); }
-    const allItems = Array.isArray(parsed.data) ? parsed.data : Array.isArray(parsed) ? parsed : [];
-    const items = allItems.filter(t => t.completed === (status === "completed"));
-    return ok(JSON.stringify({ items, count: items.length, page: { has_more: false } }, null, 2));
+    const buckets = Array.isArray(parsed.data) ? parsed.data : [];
+    const items = buckets.flatMap(b => Array.isArray(b.todos) ? b.todos : []);
+    const count = items.length;
+    const has_more = (all || count === 0) ? false : (limit != null ? count >= limit : null);
+    return ok(JSON.stringify({
+      items, count,
+      page: { has_more, ...(has_more === null && { note: "Results capped at CLI default. Pass all=true to fetch exhaustively." }) },
+    }, null, 2));
   }
 );
 
@@ -1194,15 +1196,10 @@ addTool("search",
     const displayTargets = project_ids ?? [null];
 
     if (!scopes) {
-      // Single global search (no project filter): use non-lenient mode so a zero-result
-      // CLI exit doesn't silently return partial/fallback stdout as real results.
+      // Single global search (no project filter): use non-lenient mode so errors surface.
       if (targets.length === 1 && !project_ids) {
         try {
           const raw = await runBasecamp(buildArgs(null));
-          let rawParsed;
-          try { rawParsed = JSON.parse(raw); } catch {}
-          const apiSummary = rawParsed?.summary ?? "";
-
           const effectiveLimit = limit ?? (useDefaultLimit ? 20 : null);
           const wrapped = JSON.parse(wrapPaginated(raw, { all, limit: effectiveLimit }));
           if (Array.isArray(wrapped.items)) {
@@ -1211,20 +1208,6 @@ addTool("search",
           }
           if (useDefaultLimit && wrapped.page) {
             wrapped.page.note = "Unscoped search capped at 20 results to avoid timeout. Add scopes, project_ids, or an explicit limit to control.";
-          }
-
-          // Basecamp returns its 10000-item cap when a query has no specific matches,
-          // returning recent content as fallback. Detect by checking summary count
-          // against the cap, then verifying no returned item title/subject contains any query word.
-          const summaryCount = parseInt(apiSummary.match(/^(\d+) results/)?.[1] ?? "0", 10);
-          if (summaryCount >= 10000 && wrapped.count > 0) {
-            const queryTerms = query.toLowerCase().split(/\s+/).filter(w => w.length >= 2);
-            const hasRealMatch = queryTerms.length > 0 && wrapped.items.some(item =>
-              queryTerms.some(w => `${item.title ?? ""} ${item.subject ?? ""}`.toLowerCase().includes(w))
-            );
-            if (!hasRealMatch) {
-              return ok(JSON.stringify({ items: [], count: 0, page: { has_more: false } }, null, 2));
-            }
           }
 
           return ok(JSON.stringify(wrapped, null, 2));
