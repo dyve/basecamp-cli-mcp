@@ -156,20 +156,23 @@ function collectResults(ids, settled) {
   return { succeeded, failed };
 }
 
-async function resolveProjectId(nameOrId) {
-  if (/^\d+$/.test(String(nameOrId))) return String(nameOrId);
+// Resolves a mix of project IDs and names to IDs, fetching the project list at most once
+// (only if at least one entry is a name, and shared across all name lookups in the batch).
+async function resolveProjectIds(namesOrIds) {
+  if (namesOrIds.every(v => /^\d+$/.test(String(v)))) return namesOrIds.map(String);
+  let list = [];
   try {
     const raw = await runBasecamp(["projects", "list", "--all"]);
     const parsed = JSON.parse(raw);
-    const list = Array.isArray(parsed.data) ? parsed.data : Array.isArray(parsed) ? parsed : [];
-    const found = list.find(p => p.name?.toLowerCase() === String(nameOrId).toLowerCase());
-    if (found) return String(found.id);
+    list = Array.isArray(parsed.data) ? parsed.data : Array.isArray(parsed) ? parsed : [];
   } catch {}
-  return String(nameOrId);
+  return namesOrIds.map(nameOrId => {
+    if (/^\d+$/.test(String(nameOrId))) return String(nameOrId);
+    const found = list.find(p => p.name?.toLowerCase() === String(nameOrId).toLowerCase());
+    return found ? String(found.id) : String(nameOrId);
+  });
 }
 
-// Flattens { high: [...], medium: [...], low: [...] } into a flat array with a `priority` field on each item.
-// Passes flat arrays through unchanged.
 // Flattens a response grouped into named buckets (e.g. { priorities: [...], non_priorities: [...] }
 // or { over_a_week_late: [...], under_a_week_late: [...] }) into one array, tagging each item with
 // the bucket it came from under `fieldName`. Pass-through if already flat.
@@ -300,7 +303,7 @@ addTool("create_todo",
     description: z.string().optional().describe("Extended description (Markdown, @mentions supported)"),
   },
   async ({ content, project, list, assignee, due, description }) => {
-    const args = ["todo", content, "--in", project];
+    const args = ["todos", "create", content, "--in", project];
     if (list) args.push("--list", list);
     if (assignee) args.push("--assignee", assignee);
     if (due) args.push("--due", due);
@@ -314,7 +317,7 @@ addTool("complete_todos",
   "Returns { succeeded: [id, ...], failed: [{ id, reason }, ...] }.",
   { ids: z.array(z.string()).min(1).describe("Todo ID(s) or Basecamp URL(s)") },
   async ({ ids }) => {
-    const results = await Promise.allSettled(ids.map(id => runBasecamp(["done", id])));
+    const results = await Promise.allSettled(ids.map(id => runBasecamp(["todos", "complete", id])));
     return ok(JSON.stringify(collectResults(ids, results), null, 2));
   }
 );
@@ -324,7 +327,7 @@ addTool("reopen_todos",
   "Returns { succeeded: [id, ...], failed: [{ id, reason }, ...] }.",
   { ids: z.array(z.string()).min(1).describe("Todo ID(s) or Basecamp URL(s)") },
   async ({ ids }) => {
-    const results = await Promise.allSettled(ids.map(id => runBasecamp(["reopen", id])));
+    const results = await Promise.allSettled(ids.map(id => runBasecamp(["todos", "uncomplete", id])));
     return ok(JSON.stringify(collectResults(ids, results), null, 2));
   }
 );
@@ -444,7 +447,7 @@ addTool("create_message",
     no_subscribe: z.boolean().optional().describe("Post silently, without notifying anyone"),
   },
   async ({ title, body, project, subscribe, no_subscribe }) => {
-    const args = ["message", title];
+    const args = ["messages", "create", title];
     if (body) args.push(body);
     args.push("--in", project);
     if (no_subscribe) args.push("--no-subscribe");
@@ -522,7 +525,7 @@ addTool("create_card", "Create a new card in a project's card table",
     column: z.string().optional().describe("Column ID (defaults to first column)"),
   },
   async ({ title, project, body, column }) => {
-    const args = ["card", title];
+    const args = ["cards", "create", title];
     if (body) args.push(body);
     args.push("--in", project);
     if (column) args.push("--column", column);
@@ -773,7 +776,7 @@ addTool("add_comment",
     project: z.string().optional().describe("Project ID or name"),
   },
   async ({ id, content, project }) => {
-    const args = ["comment", id, content];
+    const args = ["comments", "create", id, content];
     if (project) args.push("--in", project);
     return ok(await runBasecamp(args));
   }
@@ -972,67 +975,8 @@ addTool("get_assignments",
     let parsed;
     try { parsed = JSON.parse(raw); } catch { return ok(raw); }
 
-    // Collect all todo-like items missing created_at for parallel enrichment
-    const toEnrich = [];
-    const walk = (obj) => {
-      if (Array.isArray(obj)) {
-        obj.forEach(item => { if (item?.id && !item.created_at) toEnrich.push(item); });
-      } else if (obj && typeof obj === "object") {
-        Object.values(obj).forEach(walk);
-      }
-    };
-    walk(parsed.data ?? parsed);
-    if (!toEnrich.length) {
-      const items = flattenGroupedResponse(parsed.data ?? parsed, "group");
-      return ok(JSON.stringify({ items, count: items.length, page: { has_more: false } }, null, 2));
-    }
-
-    const details = await Promise.allSettled(
-      toEnrich.map(item => {
-        if (item.type === "card") return runBasecamp(["cards", "show", String(item.id)]);
-        if (item.type === "step" && item.parent?.id && item.bucket?.id)
-          return runBasecamp(["cards", "steps", String(item.parent.id), "--project", String(item.bucket.id)]);
-        if (item.type === "step") return Promise.resolve(null);
-        return runBasecamp(["todos", "show", String(item.id)]);
-      })
-    );
-    const createdAtMap = {};
-    details.forEach((r, i) => {
-      if (r.status !== "fulfilled" || r.value === null) return;
-      try {
-        const item = toEnrich[i];
-        const d = JSON.parse(r.value);
-        let src;
-        if (item.type === "step") {
-          const steps = Array.isArray(d.data) ? d.data : Array.isArray(d) ? d : [];
-          src = steps.find(s => s.id === item.id);
-        } else {
-          src = d.data ?? d;
-        }
-        if (src?.created_at) createdAtMap[item.id] = src.created_at;
-      } catch {}
-    });
-
-    const warnings = [];
-    for (const item of toEnrich) {
-      if (!createdAtMap[item.id]) {
-        warnings.push(`created_at unavailable for ${item.type ?? "todo"} ${item.id}`);
-      }
-    }
-
-    const inject = (obj) => {
-      if (Array.isArray(obj)) {
-        obj.forEach(item => { if (item?.id && createdAtMap[item.id]) item.created_at = createdAtMap[item.id]; });
-      } else if (obj && typeof obj === "object") {
-        Object.values(obj).forEach(inject);
-      }
-    };
-    inject(parsed.data ?? parsed);
-
     const items = flattenGroupedResponse(parsed.data ?? parsed, "group");
-    const result = { items, count: items.length, page: { has_more: false } };
-    if (warnings.length) result.warnings = warnings;
-    return ok(JSON.stringify(result, null, 2));
+    return ok(JSON.stringify({ items, count: items.length, page: { has_more: false } }, null, 2));
   }
 );
 
@@ -1195,7 +1139,7 @@ addTool("search",
     };
 
     const targets = project_ids?.length
-      ? await Promise.all(project_ids.map(resolveProjectId))
+      ? await resolveProjectIds(project_ids)
       : [null];
     const displayTargets = project_ids ?? [null];
 
