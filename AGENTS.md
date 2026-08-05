@@ -18,6 +18,10 @@ The Basecamp skill is a reference point — useful for checking gaps and as an u
 
 **Speed.** Bulk operations run in parallel via `Promise.allSettled`. Per-project search runs one CLI call per project concurrently. No sequential loops where parallel is safe.
 
+**No CLI aliases.** Always call the canonical `group subcommand` form and the full flag name (e.g. `todos create`, `--project`), never a shortcut or alias (e.g. bare `todo`, `--in`). Aliases are more likely to be deprecated or removed between CLI versions than the group noun they alias — the v0.8.0 removal of bare shortcuts (`todo`, `message`, `card`, `comment`, `done`, `reopen`) broke six tools that used them, while the group-noun forms (`todos create`, `todos complete`, etc.) were untouched. Canonical forms are also self-documenting in a diff or log, where an alias like `--in` reads ambiguously next to `--project`.
+
+This is a documentation-only rule for new/changed code going forward — it is **not yet enforced retroactively**. As of 2026-08-05 the codebase still uses `--in` (alias for `--project`) throughout, and possibly other aliases not yet audited for this. Fixing that is a separate, larger cleanup, not bundled into this note.
+
 ## Scope policy
 
 The baseline is parity with the Basecamp skill. Any tool that goes beyond that baseline is an **explicit extension** — a deliberate decision because the CLI supports it and it is useful in agent workflows.
