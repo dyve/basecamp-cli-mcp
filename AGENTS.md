@@ -18,6 +18,10 @@ The Basecamp skill is a reference point — useful for checking gaps and as an u
 
 **Speed.** Bulk operations run in parallel via `Promise.allSettled`. Per-project search runs one CLI call per project concurrently. No sequential loops where parallel is safe.
 
+**No CLI aliases.** Always call the canonical `group subcommand` form and the full flag name (e.g. `todos create`, `--project`), never a shortcut or alias (e.g. bare `todo`, `--in`). Aliases are more likely to be deprecated or removed between CLI versions than the group noun they alias — the v0.8.0 removal of bare shortcuts (`todo`, `message`, `card`, `comment`, `done`, `reopen`) broke six tools that used them, while the group-noun forms (`todos create`, `todos complete`, etc.) were untouched. Canonical forms are also self-documenting in a diff or log, where an alias like `--in` reads ambiguously next to `--project`.
+
+This is a documentation-only rule for new/changed code going forward — it is **not yet enforced retroactively**. As of 2026-08-05 the codebase still uses `--in` (alias for `--project`) throughout, and possibly other aliases not yet audited for this. Fixing that is a separate, larger cleanup, not bundled into this note.
+
 ## Scope policy
 
 The baseline is parity with the Basecamp skill. Any tool that goes beyond that baseline is an **explicit extension** — a deliberate decision because the CLI supports it and it is useful in agent workflows.
@@ -55,13 +59,15 @@ Wraps `recordings list --type TYPE`. Unlike `search`, it is exhaustive for a giv
 
 `assign_todos` accepts a per-item shape `{ id, assignee_ids[], due_date? }` so each todo can have independent assignees and an optional due date update in one call.
 
-### 5. ~~`--comments` on show tools~~
+### 5. `--comments` on show tools
 
-The SKILL.md documents `--comments` / `--all-comments` / `--no-comments` flags on typed show commands, but these are not present in CLI v0.7.2. Use `list_comments` as a follow-up call.
+`--comments` / `--all-comments` / `--no-comments` flags landed on typed show commands in CLI v0.8.0 (not present in v0.7.2). With `--json`, comments are still opt-in — pass `--comments` explicitly to get a `comments` field on the show response. `list_comments` remains the way to page through more than the default 100.
 
 ### 6. Card update and card steps
 
 `update_card` and the full step lifecycle (`list_steps`, `create_step`, `complete_step`, `uncomplete_step`, `update_step`, `move_step`, `delete_step`) are not in the official skill reference.
+
+`cards steps <card_id>` does not auto-resolve the project the way `todos show`/`cards show` do — an explicit `--project`/`--in` is required (confirmed still true on CLI v0.8.1). Our tools always pass it via `--in`. There is also no `cards step show` subcommand (confirmed still absent on v0.8.1) — the only way to get a single step's details is `cards steps <card_id> --in <project>` and filtering the returned array for the matching step ID (`type: "Kanban::Step"`).
 
 ### 7. Scoped and project-filtered search
 

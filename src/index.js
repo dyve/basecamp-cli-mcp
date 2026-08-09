@@ -156,27 +156,31 @@ function collectResults(ids, settled) {
   return { succeeded, failed };
 }
 
-async function resolveProjectId(nameOrId) {
-  if (/^\d+$/.test(String(nameOrId))) return String(nameOrId);
+// Resolves a mix of project IDs and names to IDs, fetching the project list at most once
+// (only if at least one entry is a name, and shared across all name lookups in the batch).
+async function resolveProjectIds(namesOrIds) {
+  if (namesOrIds.every(v => /^\d+$/.test(String(v)))) return namesOrIds.map(String);
+  let list = [];
   try {
     const raw = await runBasecamp(["projects", "list", "--all"]);
     const parsed = JSON.parse(raw);
-    const list = Array.isArray(parsed.data) ? parsed.data : Array.isArray(parsed) ? parsed : [];
-    const found = list.find(p => p.name?.toLowerCase() === String(nameOrId).toLowerCase());
-    if (found) return String(found.id);
+    list = Array.isArray(parsed.data) ? parsed.data : Array.isArray(parsed) ? parsed : [];
   } catch {}
-  return String(nameOrId);
+  return namesOrIds.map(nameOrId => {
+    if (/^\d+$/.test(String(nameOrId))) return String(nameOrId);
+    const found = list.find(p => p.name?.toLowerCase() === String(nameOrId).toLowerCase());
+    return found ? String(found.id) : String(nameOrId);
+  });
 }
 
-// Flattens { high: [...], medium: [...], low: [...] } into a flat array with a `priority` field on each item.
-// Passes flat arrays through unchanged.
-function flattenPriorityGroups(data) {
+// Flattens a response grouped into named buckets (e.g. { priorities: [...], non_priorities: [...] }
+// or { over_a_week_late: [...], under_a_week_late: [...] }) into one array, tagging each item with
+// the bucket it came from under `fieldName`. Pass-through if already flat.
+function flattenGroupedResponse(data, fieldName = "group") {
   if (Array.isArray(data)) return data;
   const items = [];
-  const knownOrder = ["high", "medium", "low"];
-  const keys = [...new Set([...knownOrder, ...Object.keys(data)])].filter(k => Array.isArray(data[k]));
-  for (const priority of keys) {
-    items.push(...data[priority].map(item => ({ ...item, priority })));
+  for (const key of Object.keys(data).filter(k => Array.isArray(data[k]))) {
+    items.push(...data[key].map(item => ({ ...item, [fieldName]: key })));
   }
   return items;
 }
@@ -260,23 +264,25 @@ addTool("list_todos",
     const args = ["todos", "list"];
     if (project) args.push("--in", project);
     if (list) args.push("--list", list);
-    // WORKAROUND: `basecamp todos list --status` is silently ignored in CLI v0.7.2.
-    // We fetch with --all and filter client-side. Side effect: pagination is disabled when status is used.
-    // To verify if fixed: run `basecamp todos list --status completed --json` and check whether
-    // results are pre-filtered (completed only) vs returning all todos. If fixed, remove the
-    // client-side filter below and re-enable the page param when status is provided.
+    if (status) args.push("--status", status);
     if (assignee) args.push("--assignee", assignee);
     if (overdue) args.push("--overdue");
-    if (all || status) args.push("--all");
+    if (all) args.push("--all");
     else if (limit != null) args.push("--limit", String(limit));
-    if (!status && page != null) args.push("--page", String(page));
+    if (page != null) args.push("--page", String(page));
     const raw = await runBasecamp(args);
-    if (!status) return ok(wrapPaginated(raw, { all, limit }));
+    if (project) return ok(wrapPaginated(raw, { all, limit }));
+    // Account-wide (no --in): CLI groups results by bucket — [{ bucket, todos: [...] }] — not a flat array. Flatten.
     let parsed;
     try { parsed = JSON.parse(raw); } catch { return ok(raw); }
-    const allItems = Array.isArray(parsed.data) ? parsed.data : Array.isArray(parsed) ? parsed : [];
-    const items = allItems.filter(t => t.completed === (status === "completed"));
-    return ok(JSON.stringify({ items, count: items.length, page: { has_more: false } }, null, 2));
+    const buckets = Array.isArray(parsed.data) ? parsed.data : [];
+    const items = buckets.flatMap(b => Array.isArray(b.todos) ? b.todos : []);
+    const count = items.length;
+    const has_more = (all || count === 0) ? false : (limit != null ? count >= limit : null);
+    return ok(JSON.stringify({
+      items, count,
+      page: { has_more, ...(has_more === null && { note: "Results capped at CLI default. Pass all=true to fetch exhaustively." }) },
+    }, null, 2));
   }
 );
 
@@ -297,7 +303,7 @@ addTool("create_todo",
     description: z.string().optional().describe("Extended description (Markdown, @mentions supported)"),
   },
   async ({ content, project, list, assignee, due, description }) => {
-    const args = ["todo", content, "--in", project];
+    const args = ["todos", "create", content, "--in", project];
     if (list) args.push("--list", list);
     if (assignee) args.push("--assignee", assignee);
     if (due) args.push("--due", due);
@@ -311,7 +317,7 @@ addTool("complete_todos",
   "Returns { succeeded: [id, ...], failed: [{ id, reason }, ...] }.",
   { ids: z.array(z.string()).min(1).describe("Todo ID(s) or Basecamp URL(s)") },
   async ({ ids }) => {
-    const results = await Promise.allSettled(ids.map(id => runBasecamp(["done", id])));
+    const results = await Promise.allSettled(ids.map(id => runBasecamp(["todos", "complete", id])));
     return ok(JSON.stringify(collectResults(ids, results), null, 2));
   }
 );
@@ -321,7 +327,7 @@ addTool("reopen_todos",
   "Returns { succeeded: [id, ...], failed: [{ id, reason }, ...] }.",
   { ids: z.array(z.string()).min(1).describe("Todo ID(s) or Basecamp URL(s)") },
   async ({ ids }) => {
-    const results = await Promise.allSettled(ids.map(id => runBasecamp(["reopen", id])));
+    const results = await Promise.allSettled(ids.map(id => runBasecamp(["todos", "uncomplete", id])));
     return ok(JSON.stringify(collectResults(ids, results), null, 2));
   }
 );
@@ -441,7 +447,7 @@ addTool("create_message",
     no_subscribe: z.boolean().optional().describe("Post silently, without notifying anyone"),
   },
   async ({ title, body, project, subscribe, no_subscribe }) => {
-    const args = ["message", title];
+    const args = ["messages", "create", title];
     if (body) args.push(body);
     args.push("--in", project);
     if (no_subscribe) args.push("--no-subscribe");
@@ -519,7 +525,7 @@ addTool("create_card", "Create a new card in a project's card table",
     column: z.string().optional().describe("Column ID (defaults to first column)"),
   },
   async ({ title, project, body, column }) => {
-    const args = ["card", title];
+    const args = ["cards", "create", title];
     if (body) args.push(body);
     args.push("--in", project);
     if (column) args.push("--column", column);
@@ -770,7 +776,7 @@ addTool("add_comment",
     project: z.string().optional().describe("Project ID or name"),
   },
   async ({ id, content, project }) => {
-    const args = ["comment", id, content];
+    const args = ["comments", "create", id, content];
     if (project) args.push("--in", project);
     return ok(await runBasecamp(args));
   }
@@ -948,9 +954,10 @@ addTool("post_chat_message",
 // ── ASSIGNMENTS & REPORTS ─────────────────────────────────────────────────────
 
 addTool("get_assignments",
-  "Cross-project todo assignments FOR THE AUTHENTICATED USER (you), grouped by priority. " +
+  "Cross-project todo assignments FOR THE AUTHENTICATED USER (you). " +
   "Scope filters by time window. " +
-  "Returns { items, count, page } — each item has a priority field (high/medium/low). " +
+  "Returns { items, count, page }. For scope='all' (default), each item has a `group` field: " +
+  "'priorities' (starred / added to Up Next) or 'non_priorities'. Other scopes (due dates, completed) return a flat list with no `group` field. " +
   "Empty result means you have no todos in that scope — does not mean you have no todos at all. " +
   "For a different person's todos, use get_assigned_todos. " +
   "For overdue todos across all assignees, use get_overdue_todos.",
@@ -968,74 +975,15 @@ addTool("get_assignments",
     let parsed;
     try { parsed = JSON.parse(raw); } catch { return ok(raw); }
 
-    // Collect all todo-like items missing created_at for parallel enrichment
-    const toEnrich = [];
-    const walk = (obj) => {
-      if (Array.isArray(obj)) {
-        obj.forEach(item => { if (item?.id && !item.created_at) toEnrich.push(item); });
-      } else if (obj && typeof obj === "object") {
-        Object.values(obj).forEach(walk);
-      }
-    };
-    walk(parsed.data ?? parsed);
-    if (!toEnrich.length) {
-      const items = flattenPriorityGroups(parsed.data ?? parsed);
-      return ok(JSON.stringify({ items, count: items.length, page: { has_more: false } }, null, 2));
-    }
-
-    const details = await Promise.allSettled(
-      toEnrich.map(item => {
-        if (item.type === "card") return runBasecamp(["cards", "show", String(item.id)]);
-        if (item.type === "step" && item.parent?.id && item.bucket?.id)
-          return runBasecamp(["cards", "steps", String(item.parent.id), "--project", String(item.bucket.id)]);
-        if (item.type === "step") return Promise.resolve(null);
-        return runBasecamp(["todos", "show", String(item.id)]);
-      })
-    );
-    const createdAtMap = {};
-    details.forEach((r, i) => {
-      if (r.status !== "fulfilled" || r.value === null) return;
-      try {
-        const item = toEnrich[i];
-        const d = JSON.parse(r.value);
-        let src;
-        if (item.type === "step") {
-          const steps = Array.isArray(d.data) ? d.data : Array.isArray(d) ? d : [];
-          src = steps.find(s => s.id === item.id);
-        } else {
-          src = d.data ?? d;
-        }
-        if (src?.created_at) createdAtMap[item.id] = src.created_at;
-      } catch {}
-    });
-
-    const warnings = [];
-    for (const item of toEnrich) {
-      if (!createdAtMap[item.id]) {
-        warnings.push(`created_at unavailable for ${item.type ?? "todo"} ${item.id}`);
-      }
-    }
-
-    const inject = (obj) => {
-      if (Array.isArray(obj)) {
-        obj.forEach(item => { if (item?.id && createdAtMap[item.id]) item.created_at = createdAtMap[item.id]; });
-      } else if (obj && typeof obj === "object") {
-        Object.values(obj).forEach(inject);
-      }
-    };
-    inject(parsed.data ?? parsed);
-
-    const items = flattenPriorityGroups(parsed.data ?? parsed);
-    const result = { items, count: items.length, page: { has_more: false } };
-    if (warnings.length) result.warnings = warnings;
-    return ok(JSON.stringify(result, null, 2));
+    const items = flattenGroupedResponse(parsed.data ?? parsed, "group");
+    return ok(JSON.stringify({ items, count: items.length, page: { has_more: false } }, null, 2));
   }
 );
 
 addTool("get_assigned_todos",
   "Cross-project todos assigned to ANY person (not limited to yourself). " +
-  "Pass assignee name/ID or 'me'. Returns { items, count, page } — each item has a priority field (high/medium/low). " +
-  "Use this for team-member overviews; use get_assignments for your own priority-grouped view.",
+  "Pass assignee name/ID or 'me'. Returns { items, count, page } — a flat list, no priority/group field. " +
+  "Use this for team-member overviews; use get_assignments for your own view (which does include a priorities/non_priorities group).",
   { assignee: z.string().optional().describe("Person name, ID, or 'me' (defaults to current user)") },
   async ({ assignee }) => {
     const args = ["reports", "assigned"];
@@ -1043,7 +991,8 @@ addTool("get_assigned_todos",
     const raw = await runBasecamp(args);
     try {
       const parsed = JSON.parse(raw);
-      const items = flattenPriorityGroups(parsed.data ?? parsed);
+      const data = parsed.data ?? parsed;
+      const items = Array.isArray(data) ? data : Array.isArray(data.todos) ? data.todos : [];
       return ok(JSON.stringify({ items, count: items.length, page: { has_more: false } }, null, 2));
     } catch {
       return ok(raw);
@@ -1055,7 +1004,8 @@ addTool("get_overdue_todos",
   "Get overdue todos across all projects and all assignees (not filtered to the current user). " +
   "For your own overdue todos only, use get_assignments with scope='overdue' instead. " +
   "Use assignee to filter by person (name, ID, or 'me'), and project to scope to one project. " +
-  "Returns { items, count, page } — each item has a priority field (high/medium/low).",
+  "Returns { items, count, page } — each item has a `lateness` field: " +
+  "'under_a_week_late', 'over_a_week_late', 'over_a_month_late', or 'over_three_months_late'.",
   {
     project: z.string().optional().describe("Project ID or name"),
     assignee: z.string().optional().describe("Filter by assignee: name, ID, or 'me'"),
@@ -1067,7 +1017,7 @@ addTool("get_overdue_todos",
     if (!assignee) {
       try {
         const parsed = JSON.parse(raw);
-        const items = flattenPriorityGroups(parsed.data ?? parsed);
+        const items = flattenGroupedResponse(parsed.data ?? parsed, "lateness");
         return ok(JSON.stringify({ items, count: items.length, page: { has_more: false } }, null, 2));
       } catch {
         return ok(raw);
@@ -1096,7 +1046,7 @@ addTool("get_overdue_todos",
         )
       );
     }
-    const items = flattenPriorityGroups(filtered);
+    const items = flattenGroupedResponse(filtered, "lateness");
     return ok(JSON.stringify({ items, count: items.length, page: { has_more: false } }, null, 2));
   }
 );
@@ -1189,20 +1139,15 @@ addTool("search",
     };
 
     const targets = project_ids?.length
-      ? await Promise.all(project_ids.map(resolveProjectId))
+      ? await resolveProjectIds(project_ids)
       : [null];
     const displayTargets = project_ids ?? [null];
 
     if (!scopes) {
-      // Single global search (no project filter): use non-lenient mode so a zero-result
-      // CLI exit doesn't silently return partial/fallback stdout as real results.
+      // Single global search (no project filter): use non-lenient mode so errors surface.
       if (targets.length === 1 && !project_ids) {
         try {
           const raw = await runBasecamp(buildArgs(null));
-          let rawParsed;
-          try { rawParsed = JSON.parse(raw); } catch {}
-          const apiSummary = rawParsed?.summary ?? "";
-
           const effectiveLimit = limit ?? (useDefaultLimit ? 20 : null);
           const wrapped = JSON.parse(wrapPaginated(raw, { all, limit: effectiveLimit }));
           if (Array.isArray(wrapped.items)) {
@@ -1211,20 +1156,6 @@ addTool("search",
           }
           if (useDefaultLimit && wrapped.page) {
             wrapped.page.note = "Unscoped search capped at 20 results to avoid timeout. Add scopes, project_ids, or an explicit limit to control.";
-          }
-
-          // Basecamp returns its 10000-item cap when a query has no specific matches,
-          // returning recent content as fallback. Detect by checking summary count
-          // against the cap, then verifying no returned item title/subject contains any query word.
-          const summaryCount = parseInt(apiSummary.match(/^(\d+) results/)?.[1] ?? "0", 10);
-          if (summaryCount >= 10000 && wrapped.count > 0) {
-            const queryTerms = query.toLowerCase().split(/\s+/).filter(w => w.length >= 2);
-            const hasRealMatch = queryTerms.length > 0 && wrapped.items.some(item =>
-              queryTerms.some(w => `${item.title ?? ""} ${item.subject ?? ""}`.toLowerCase().includes(w))
-            );
-            if (!hasRealMatch) {
-              return ok(JSON.stringify({ items: [], count: 0, page: { has_more: false } }, null, 2));
-            }
           }
 
           return ok(JSON.stringify(wrapped, null, 2));

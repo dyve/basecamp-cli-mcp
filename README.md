@@ -5,7 +5,7 @@
 ## Requirements
 
 - Node.js 18+
-- [Basecamp CLI](https://github.com/basecamp/basecamp-cli) installed and authenticated
+- [Basecamp CLI](https://github.com/basecamp/basecamp-cli) v0.8.1+ installed and authenticated (older versions silently mis-filter `todos list --status`)
 
 ## Setup
 
