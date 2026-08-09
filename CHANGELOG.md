@@ -6,7 +6,32 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
-- **Requires Basecamp CLI v0.8.1+** (was tested against v0.7.2). See below for why.
+- **Requires Basecamp CLI v0.9.0+** (was tested against v0.8.1). CLI v0.9.0 also changed `basecamp auth login` against a Basecamp-hosted OAuth server to request `full` scope by default instead of a server-side read-only default (previously every write returned "access denied" for such logins) — this only affects new logins and is not something this MCP server's code can or needs to work around.
+
+### Fixed (re-verified every CLI invocation against v0.9.0 `--help` and live data)
+
+- **`list_cards`: pagination (`all`/`limit`/`page`) now hard-errors without a `column`.** CLI v0.9.0 requires `--column` whenever pagination flags are used on a project-scoped `cards list` (`{"error": "Pagination flags require --column"}`) — previously a bare call with no flags already returned every card across all columns in one shot. The tool now only forwards pagination flags when `column` is set; without a column it treats the (already-complete) result as `has_more: false` instead of erroring.
+- **`get_assigned_todos`: `--assignee` is not a real flag on `reports assigned`.** Any call with a non-default `assignee` param threw `"Unknown option: --assignee"`. The person is a positional argument (`basecamp reports assigned [person]`); fixed to pass it positionally. Verified `reports assigned me` returns `{ data: { grouped_by, person, todos: [...] } }` with `data.todos` still a flat array (the existing parsing logic needed no other changes).
+- **`get_overdue_todos`: the `project` param was silently a no-op.** `reports overdue --project <id>` is accepted by the CLI but ignored — it's only an inherited global flag, not consumed by the subcommand itself (confirmed: a bogus project ID returned the same unfiltered 81-item result as no filter at all). The tool now filters client-side by `item.bucket.id`/`item.bucket.name`, the same pattern already used for `assignee` filtering in this function, resolving a project name to an ID via the existing `resolveProjectIds` helper.
+- `list_notifications`: tool description claimed the response shape was `{ data: { memories, reads, unreads } }`. There is no `memories` key on Basecamp 5 (that's BC4-only terminology) — actual shape is `{ reads, unreads, bubble_ups_count, scheduled_bubble_ups_count }`, and the Bubble Up items themselves aren't in this payload at all (counts only). Description corrected; added a pointer to `basecamp_run ["notifications", "bubbleups"]` for listing them.
+- `list_projects`, `list_todolists`, `list_documents`, `list_uploads`, `list_people`: these subcommands' own `--help` states their true no-flag default is "fetch everything" (`0 = all`), not a capped page — `wrapPaginated` was labeling a complete result set as `has_more: null` with a "pass all=true to fetch exhaustively" note, prompting a wasted redundant follow-up call. Now treated as `all: true` whenever no `limit` is given. Left unchanged where the CLI default is genuinely a capped page: `list_messages`/`browse_content` (100), `list_chat_messages` (25, no exhaustive mode).
+
+### Added
+
+- `get_assignments`: added the `due_later` scope value, new in CLI v0.9.0 alongside the existing `overdue`/`due_today`/`due_tomorrow`/`due_later_this_week`/`due_next_week` (confirmed via `assignments due --help` and a live call).
+- `move_card`: added `to_wormhole` (maps to `--to-wormhole`), new in CLI v0.9.0 for moving a card to a different *project* asynchronously via a wormhole ID or destination-column URL. Not added to the batch `move_cards` tool — wormhole moves are a distinct, rarer per-card action, not a column-move variant.
+
+### Verified correct, not a bug
+
+- `cards step update`/`cards step create`, `cards move --to`/`--position`/`--on-hold`, `cards step move`: all flags unchanged from v0.8.1. CLI v0.9.0's "presence-aware card step updates" / "stop echoing back unchanged step fields" changes (PRs #608, #620) only affect which fields appear in the *response* JSON on partial updates — since these tools pass the response straight through, there's nothing to break.
+- `reports assigned --group-by project|date` (new in v0.9.0): confirmed grouping only adds a `grouped_by` label, `data.todos` stays a flat array either way — no parsing impact even though this tool doesn't expose the flag.
+- `reports overdue` bucket keys (`over_a_month_late`, etc.), account-wide `todos list` bucket shape (`[{ bucket, todos }]`), `assignments`/`assignments due`/`assignments completed` shapes: all unchanged from v0.8.1.
+- `docs` is confirmed a CLI-level alias for the `files` command tree (`ALIASES: docs, documents`) — `create_document`/`update_document`'s `["docs", ...]` invocations still resolve correctly.
+
+### Audited and confirmed unaffected (CLI v0.9.0)
+
+- `chat`, `checkins`, `webhooks`, `subscriptions`, `templates`, `gauges`, `lineup`, `accounts`, `hillcharts`, `cards wormholes` — only reachable via `basecamp_run`, no shape-specific logic to break.
+- Not wired up as dedicated tools (all reachable today via `basecamp_run`, listed here so a future pass knows they exist): `cards list --all-projects` (account-wide Kanban card listing with its own assignee/due/unassigned filters, the card-table analog of the `todos list` account-wide filtering below), `todos list --all-projects`/`--due <with|without|overdue>`/`--unassigned`/`--no-due-date` (new account-wide, server-side filters), `reports schedule --start`/`--end` (custom date window), `cards wormholes list/create/update/delete` (needed to discover valid `--to-wormhole` targets), `comments list --all-projects`/`comments thread`, `files list --all-projects --kind --person`, `notifications bubbleups`, top-level `assign`/`unassign` shortcuts.
 
 ### Fixed
 

@@ -208,7 +208,8 @@ addTool("list_projects",
     if (all) args.push("--all");
     else if (limit != null) args.push("--limit", String(limit));
     if (page != null) args.push("--page", String(page));
-    return ok(wrapPaginated(await runBasecamp(args), { all, limit }));
+    // CLI's own no-limit default is "fetch all" (0 = all), not a capped page.
+    return ok(wrapPaginated(await runBasecamp(args), { all: all || limit == null, limit }));
   }
 );
 
@@ -387,7 +388,8 @@ addTool("list_todolists",
     if (all) args.push("--all");
     else if (limit != null) args.push("--limit", String(limit));
     if (page != null) args.push("--page", String(page));
-    return ok(wrapPaginated(await runBasecamp(args), { all, limit }));
+    // CLI's own no-limit default is "fetch all" (0 = all), not a capped page.
+    return ok(wrapPaginated(await runBasecamp(args), { all: all || limit == null, limit }));
   }
 );
 
@@ -491,10 +493,14 @@ addTool("list_cards", "List all active cards in a project's card table. Returns 
     const args = ["cards", "list", "--in", project];
     if (column) args.push("--column", column);
     if (card_table) args.push("--card-table", card_table);
-    if (all) args.push("--all");
-    else if (limit != null) args.push("--limit", String(limit));
-    if (page != null) args.push("--page", String(page));
-    return ok(wrapPaginated(await runBasecamp(args), { all, limit }));
+    // Pagination flags require --column (CLI 0.9.0+): without it, cards are merged across
+    // every column and the CLI already returns everything in one call.
+    if (column) {
+      if (all) args.push("--all");
+      else if (limit != null) args.push("--limit", String(limit));
+      if (page != null) args.push("--page", String(page));
+    }
+    return ok(wrapPaginated(await runBasecamp(args), { all: all || !column, limit: column ? limit : null }));
   }
 );
 
@@ -533,20 +539,26 @@ addTool("create_card", "Create a new card in a project's card table",
   }
 );
 
-addTool("move_card", "Move a single card to a different column. To move multiple cards at once, use move_cards.",
+addTool("move_card", "Move a single card to a different column, or to a different PROJECT via --to-wormhole. To move multiple cards at once, use move_cards.",
   {
     id: z.string().describe("Card ID"),
     to: z.string().optional().describe("Target column ID or name"),
     position: z.number().int().optional().describe("Position in column (1-indexed)"),
     on_hold: z.boolean().optional().describe("Move to on-hold section"),
+    to_wormhole: z.string().optional().describe(
+      "Teleport the card to a different project through a wormhole (wormhole ID or destination-column URL). " +
+      "Asynchronous: the card disappears from this project once the server files it into the destination. " +
+      "Find valid wormholes with basecamp_run [\"cards\", \"wormholes\", \"list\", \"--in\", project]."
+    ),
     project: z.string().optional().describe("Project ID or name (required when using column name)"),
     card_table: z.string().optional().describe("Card table ID (required if project has multiple tables and using column name)"),
   },
-  async ({ id, to, position, on_hold, project, card_table }) => {
+  async ({ id, to, position, on_hold, to_wormhole, project, card_table }) => {
     const args = ["cards", "move", id];
     if (to) args.push("--to", to);
     if (position != null) args.push("--position", String(position));
     if (on_hold) args.push("--on-hold");
+    if (to_wormhole) args.push("--to-wormhole", to_wormhole);
     if (project) args.push("--in", project);
     if (card_table) args.push("--card-table", card_table);
     return ok(await runBasecamp(args));
@@ -833,7 +845,8 @@ addTool("list_documents",
     if (all) args.push("--all");
     else if (limit != null) args.push("--limit", String(limit));
     if (page != null) args.push("--page", String(page));
-    return ok(wrapPaginated(await runBasecamp(args), { all, limit }));
+    // CLI's own no-limit default is "fetch all" (0 = all), not a capped page.
+    return ok(wrapPaginated(await runBasecamp(args), { all: all || limit == null, limit }));
   }
 );
 
@@ -897,7 +910,8 @@ addTool("list_uploads",
     if (all) args.push("--all");
     else if (limit != null) args.push("--limit", String(limit));
     if (page != null) args.push("--page", String(page));
-    return ok(wrapPaginated(await runBasecamp(args), { all, limit }));
+    // CLI's own no-limit default is "fetch all" (0 = all), not a capped page.
+    return ok(wrapPaginated(await runBasecamp(args), { all: all || limit == null, limit }));
   }
 );
 
@@ -962,9 +976,9 @@ addTool("get_assignments",
   "For a different person's todos, use get_assigned_todos. " +
   "For overdue todos across all assignees, use get_overdue_todos.",
   {
-    scope: z.enum(["all", "overdue", "due_today", "due_tomorrow", "due_later_this_week", "due_next_week", "completed"])
+    scope: z.enum(["all", "overdue", "due_today", "due_tomorrow", "due_later_this_week", "due_next_week", "due_later", "completed"])
       .optional()
-      .describe("'all' (default), 'overdue', 'due_today', 'due_tomorrow', 'due_later_this_week', 'due_next_week', 'completed'"),
+      .describe("'all' (default), 'overdue', 'due_today', 'due_tomorrow', 'due_later_this_week', 'due_next_week', 'due_later', 'completed'"),
   },
   async ({ scope }) => {
     let raw;
@@ -987,7 +1001,7 @@ addTool("get_assigned_todos",
   { assignee: z.string().optional().describe("Person name, ID, or 'me' (defaults to current user)") },
   async ({ assignee }) => {
     const args = ["reports", "assigned"];
-    if (assignee) args.push("--assignee", assignee);
+    if (assignee) args.push(assignee);
     const raw = await runBasecamp(args);
     try {
       const parsed = JSON.parse(raw);
@@ -1011,10 +1025,10 @@ addTool("get_overdue_todos",
     assignee: z.string().optional().describe("Filter by assignee: name, ID, or 'me'"),
   },
   async ({ project, assignee }) => {
-    const args = ["reports", "overdue"];
-    if (project) args.push("--project", project);
-    const raw = await runBasecamp(args);
-    if (!assignee) {
+    // NOTE: `reports overdue` has no server-side --project filter (it's only an inherited
+    // global flag the subcommand ignores) — project scoping is done client-side below, like assignee.
+    const raw = await runBasecamp(["reports", "overdue"]);
+    if (!assignee && !project) {
       try {
         const parsed = JSON.parse(raw);
         const items = flattenGroupedResponse(parsed.data ?? parsed, "lateness");
@@ -1029,6 +1043,8 @@ addTool("get_overdue_todos",
       const me = JSON.parse(await runBasecamp(["me"]));
       matchId = String((me.data || me).id);
     }
+    let projectId = null;
+    if (project) [projectId] = await resolveProjectIds([project]);
 
     const envelope = JSON.parse(raw);
     const data = envelope.data || envelope;
@@ -1036,14 +1052,15 @@ addTool("get_overdue_todos",
     for (const [key, todos] of Object.entries(data)) {
       if (!Array.isArray(todos)) { filtered[key] = todos; continue; }
       filtered[key] = todos.filter(t =>
-        (t.assignees || []).some(a =>
+        (!project || String(t.bucket?.id) === projectId || (t.bucket?.name || "").toLowerCase() === String(project).toLowerCase()) &&
+        (!assignee || (t.assignees || []).some(a =>
           (matchId && String(a.id) === matchId) ||
           (!matchId && (
             String(a.id) === String(assignee) ||
             (a.name || "").toLowerCase().includes(assignee.toLowerCase()) ||
             a.email_address === assignee
           ))
-        )
+        ))
       );
     }
     const items = flattenGroupedResponse(filtered, "lateness");
@@ -1060,7 +1077,8 @@ addTool("get_schedule",
 // ── NOTIFICATIONS ─────────────────────────────────────────────────────────────
 
 addTool("list_notifications",
-  "List your Basecamp notifications. Returns { data: { memories, reads, unreads }, page: { has_more } } — a structured inbox, not a flat list. " +
+  "List your Basecamp notifications. Returns { data: { reads, unreads, bubble_ups_count, scheduled_bubble_ups_count }, page: { has_more } } — a structured inbox, not a flat list. " +
+  "bubble_ups_count/scheduled_bubble_ups_count are counts only, not items — use basecamp_run [\"notifications\", \"bubbleups\"] to list them. " +
   "page.has_more is null (unknown); increment page param to fetch the next page.",
   { page: z.number().int().optional().describe("Page number (default: 1)") },
   async ({ page }) => {
@@ -1341,7 +1359,8 @@ addTool("list_people",
     if (all) args.push("--all");
     else if (limit != null) args.push("--limit", String(limit));
     if (page != null) args.push("--page", String(page));
-    return ok(wrapPaginated(await runBasecamp(args), { all, limit }));
+    // CLI's own no-limit default is "fetch all" (0 = all), not a capped page.
+    return ok(wrapPaginated(await runBasecamp(args), { all: all || limit == null, limit }));
   }
 );
 
