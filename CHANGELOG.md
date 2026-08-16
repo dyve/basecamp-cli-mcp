@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Added (CLI v0.9.1)
+
+- `list_upload_versions`: lists every version of an uploaded file (`files versions`, new in CLI v0.9.1). Paginated like the other list tools; the CLI's no-limit default is "fetch everything" here too, so a bare call reports `has_more: false`. The description states what the items actually are, since it is easy to misread them as uploads: each item is a *version* — its `id` is a version ID (not the upload's), `download_url` points at that specific version, and exactly one item has `current: true`.
+- `replace_upload`: publishes a new version of an existing upload from a local file (`files replace`, new in CLI v0.9.1). The upload keeps its ID, URL and comments, so a published link keeps working across releases. Nobody is notified. `description` is omitted from the CLI call when the param is absent (the existing description carries forward) and passed through when present, so an explicit empty string clears it — the endpoint's presence semantics, which a plain truthiness check would have collapsed. `base_name` renames without touching the extension.
+- Creating an upload still has no dedicated tool; documented in AGENTS.md as `basecamp_run ["files", "uploads", "create", ...]`.
+
+Both verified live against the sandbox project: create → `replace_upload` → `list_upload_versions` returned both filenames with exactly one current version, `base_name` applied, and the description confirmed to carry forward on omission and clear on an explicit empty string. Test upload trashed afterward.
+
 ### Fixed (CLI v0.9.1 exit-code audit)
 
 - **`lenient` mode in `runBasecamp` silently turned failed calls into empty results.** The CLI prints its error envelope (`{ ok: false, error, code, meta: { request_id } }`) to *stdout*, not stderr, so the lenient path's "stdout parses as JSON → treat it as a payload" test accepted error envelopes as data. Since an error envelope has no `data` array, callers read it as zero items. Concretely: in scoped `search` across several projects, a project whose search failed was counted as searched with no hits and produced **no warning** — `scopes_searched` still listed every scope and `warnings` was empty. Lenient now returns the payload only when `ok !== false`, so genuine failures reach the existing per-project warning path. Verified end to end against a stub CLI emitting an error envelope with a nonzero exit, and confirmed a nonzero exit that still carries a usable payload (lenient's actual purpose) is still returned.

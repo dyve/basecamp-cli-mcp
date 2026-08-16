@@ -48,6 +48,10 @@ The official skill covers read operations only. Added:
 
 - `create_document` — creates a new document; supports draft, subscribe, folder placement
 - `update_document` — updates title or content; accepts ID or Basecamp URL
+- `list_upload_versions` — an upload's version history (CLI v0.9.1+)
+- `replace_upload` — publishes a new version of an existing upload, keeping its ID, URL and comments (CLI v0.9.1+)
+
+Creating an upload has no dedicated tool — use `basecamp_run ["files", "uploads", "create", "<path>", "--project", "<id>"]`.
 
 ### 3. `browse_content` — reliable type-based browsing **[PR candidate]**
 
