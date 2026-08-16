@@ -40,10 +40,76 @@ const ENV = {
   ].filter(Boolean).join(":"),
 };
 
+// The CLI's exit codes, by number. 0-8 come from the shared `basecamp/cli` output module;
+// 9 and 10 are local to the CLI (added in v0.9.1 when the SDK started emitting 422 validation
+// and 507 account-limit errors, which previously collapsed into api_error/7).
+const EXIT_CODE_NAMES = {
+  1: "usage",
+  2: "not_found",
+  3: "auth_required",
+  4: "forbidden",
+  5: "rate_limit",
+  6: "network",
+  7: "api_error",
+  8: "ambiguous",
+  9: "validation",
+  10: "limit_exceeded",
+};
+
+// What an agent should do about each error code, where the code alone is not actionable.
+const EXIT_CODE_HINTS = {
+  auth_required: "run `basecamp auth login` outside this server",
+  forbidden: "the authenticated token lacks access to this resource or scope",
+  ambiguous: "the name matched several records — pass an ID instead",
+  validation: "the API rejected a field value (HTTP 422); check required fields and formats",
+  limit_exceeded: "an account limit was reached (HTTP 507); the request cannot be retried as-is",
+};
+
+// Parses a failed CLI invocation into { code, exit, message, request_id }.
+// On any error the CLI prints its envelope — { ok: false, error, code, meta: { request_id } } —
+// to stdout, not stderr, and exits with the code matching `code`. Process-level failures
+// (missing binary, timeout) have no envelope; Node reports those in `e.code` as a string.
+function describeCliError(e) {
+  const exit = typeof e?.code === "number" ? e.code : null;
+  let envelope = null;
+  const out = e?.stdout?.trim();
+  if (out) { try { envelope = JSON.parse(out); } catch {} }
+
+  if (envelope?.ok === false) {
+    return {
+      code: envelope.code ?? EXIT_CODE_NAMES[exit] ?? "unknown",
+      exit,
+      message: envelope.error ?? "unknown error",
+      request_id: envelope.meta?.request_id ?? null,
+    };
+  }
+  return {
+    code: EXIT_CODE_NAMES[exit] ?? (typeof e?.code === "string" ? e.code : "unknown"),
+    exit,
+    message: e?.stderr?.trim() || out || e?.message || String(e),
+    request_id: null,
+  };
+}
+
+// One-line rendering of describeCliError, for tool errors and per-project warnings.
+function formatCliError(e) {
+  const { code, exit, message, request_id } = describeCliError(e);
+  const hint = EXIT_CODE_HINTS[code];
+  const label = exit != null ? `${code}/exit ${exit}` : code;
+  return `[${label}]: ${message}`
+    + (hint ? ` — ${hint}` : "")
+    + (request_id ? ` (request_id: ${request_id})` : "");
+}
+
 // Uses execFile (not exec) — args are passed directly to the Go binary, no shell involved.
 // Node.js error messages display args space-joined without quotes (e.g. "basecamp search foo bar
 // --project 123"), which looks like a shell-quoting issue but is purely a display artifact.
 // Multi-word arguments (queries, project names) are received intact by the CLI.
+//
+// lenient: return the CLI's stdout instead of throwing when the process exits nonzero but still
+// produced a usable payload. It must not swallow an explicit `{ ok: false }` error envelope —
+// those parse as JSON but carry no items, so returning one would turn a failed call into a
+// silent empty result for the caller.
 async function runBasecamp(args, { markdown = false, jq = null, lenient = false } = {}) {
   const formatFlag = markdown ? "--md" : "--json";
   const allArgs = jq
@@ -58,7 +124,12 @@ async function runBasecamp(args, { markdown = false, jq = null, lenient = false 
   } catch (e) {
     if (lenient) {
       const out = e.stdout?.trim();
-      if (out) { try { JSON.parse(out); return out; } catch {} }
+      if (out) {
+        try {
+          const parsed = JSON.parse(out);
+          if (parsed?.ok !== false) return out;
+        } catch {}
+      }
     }
     throw e;
   }
@@ -82,8 +153,7 @@ function addTool(name, description, schema, handler) {
     try {
       return await handler(args);
     } catch (e) {
-      const msg = e.stderr?.trim() || e.stdout?.trim() || e.message;
-      return fail(`Basecamp error: ${msg}`);
+      return fail(`Basecamp error ${formatCliError(e)}`);
     }
   });
 }
@@ -1178,8 +1248,8 @@ addTool("search",
 
           return ok(JSON.stringify(wrapped, null, 2));
         } catch (e) {
-          const reason = e.stderr?.trim() || e.stdout?.trim() || e.message;
-          return ok(JSON.stringify({ items: [], count: 0, page: { has_more: false }, warnings: reason ? [reason] : [] }, null, 2));
+          const reason = formatCliError(e);
+          return ok(JSON.stringify({ items: [], count: 0, page: { has_more: false }, warnings: [`search failed: ${reason}`] }, null, 2));
         }
       }
 
@@ -1196,8 +1266,7 @@ addTool("search",
           allItems.push(...items.filter(item => item.type && VALID_SEARCH_TYPES.has(item.type)));
         } else {
           const pid = displayTargets[i];
-          const reason = r.reason?.stderr?.trim() || r.reason?.stdout?.trim() || r.reason?.message || String(r.reason);
-          warnings.push(`search in project '${pid}' failed: ${reason}`);
+          warnings.push(`search in project '${pid}' failed: ${formatCliError(r.reason)}`);
         }
       }
       const result = { items: allItems, count: allItems.length, page: { has_more: false } };
@@ -1226,7 +1295,7 @@ addTool("search",
         }
       } else {
         const pid = displayTargets[i];
-        const reason = r.reason?.stderr?.trim() || r.reason?.stdout?.trim() || r.reason?.message || String(r.reason);
+        const reason = formatCliError(r.reason);
         warnings.push(pid ? `search in project '${pid}' failed: ${reason}` : `search failed: ${reason}`);
       }
     }
@@ -1306,17 +1375,33 @@ addTool("get_timeline",
     // items older than since (hitOlder), or limit is reached (hitLimit).
     const sinceDate = new Date(since);
     const collected = [];
+    const warnings = [];
     let currentPage = 1;
     let hitLimit = false;
+    let truncated = false;
 
     outer: while (true) {
       const pageArgs = currentPage === 1
         ? [...baseArgs, "--limit", "100"]
         : [...baseArgs, "--limit", "100", "--page", String(currentPage)];
       let raw;
-      try { raw = await runBasecamp(pageArgs, { lenient: true }); } catch { break; }
+      try {
+        raw = await runBasecamp(pageArgs, { lenient: true });
+      } catch (e) {
+        // A failed page stops the walk with whatever was collected so far. Say so rather than
+        // returning a short list that looks complete.
+        warnings.push(`timeline page ${currentPage} failed: ${formatCliError(e)}`);
+        truncated = true;
+        break;
+      }
       let parsed;
-      try { parsed = JSON.parse(raw); } catch { break; }
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        warnings.push(`timeline page ${currentPage} returned unparseable output`);
+        truncated = true;
+        break;
+      }
       const items = Array.isArray(parsed.data) ? parsed.data : Array.isArray(parsed) ? parsed : [];
       if (!items.length) break;
       let hitOlder = false;
@@ -1338,7 +1423,8 @@ addTool("get_timeline",
     return ok(JSON.stringify({
       items: collected,
       count: collected.length,
-      page: { has_more: hitLimit, since_applied: since },
+      page: { has_more: hitLimit || truncated, since_applied: since },
+      ...(warnings.length && { warnings }),
     }, null, 2));
   }
 );

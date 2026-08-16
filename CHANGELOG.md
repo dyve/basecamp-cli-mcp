@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed (CLI v0.9.1 exit-code audit)
+
+- **`lenient` mode in `runBasecamp` silently turned failed calls into empty results.** The CLI prints its error envelope (`{ ok: false, error, code, meta: { request_id } }`) to *stdout*, not stderr, so the lenient path's "stdout parses as JSON → treat it as a payload" test accepted error envelopes as data. Since an error envelope has no `data` array, callers read it as zero items. Concretely: in scoped `search` across several projects, a project whose search failed was counted as searched with no hits and produced **no warning** — `scopes_searched` still listed every scope and `warnings` was empty. Lenient now returns the payload only when `ok !== false`, so genuine failures reach the existing per-project warning path. Verified end to end against a stub CLI emitting an error envelope with a nonzero exit, and confirmed a nonzero exit that still carries a usable payload (lenient's actual purpose) is still returned.
+- **`get_timeline` with `since` reported a truncated walk as a complete one.** A failed page inside the sequential pagination loop was swallowed by a bare `catch { break }`, returning the events collected so far with `page.has_more: false` and no indication anything went wrong. Failures now append to a `warnings` array and set `page.has_more: true`.
+- **Exit codes were discarded from every error message.** Tool errors dumped the raw JSON envelope. They now render as `Basecamp error [<code>/exit <n>]: <message>` with the `request_id` and, for the codes where the name alone isn't actionable (`auth_required`, `forbidden`, `ambiguous`, `validation`, `limit_exceeded`), a one-line remediation hint. New `describeCliError`/`formatCliError` helpers are shared by the tool-level catch, both `search` warning paths, and the `get_timeline` loop, replacing four copies of the `e.stderr || e.stdout || e.message` idiom.
+- Added the full exit-code table, including `validation`/9 (422) and `limit_exceeded`/10 (507) — new in CLI v0.9.1, previously collapsed into `api_error`/7. Values verified against the CLI's `internal/output/codes.go` and the shared `basecamp/cli` `output/codes.go` at tag v0.9.1, plus live probes (`not_found`/2, `usage`/1).
+
 ### Changed
 
 - **Requires Basecamp CLI v0.9.0+** (was tested against v0.8.1). CLI v0.9.0 also changed `basecamp auth login` against a Basecamp-hosted OAuth server to request `full` scope by default instead of a server-side read-only default (previously every write returned "access denied" for such logins) — this only affects new logins and is not something this MCP server's code can or needs to work around.

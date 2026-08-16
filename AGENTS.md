@@ -117,3 +117,21 @@ Single file: `src/index.js`. All tools registered with `addTool(name, descriptio
 **`basecamp_run`:** last resort for operations without a specific tool: gauges, lineup, check-ins, webhooks, subscriptions, templates, accounts, schedule create/update, todos position/sweep, messages pin/publish, timesheet, forwards, boost/reactions, attachments download. Do not pass `--json` or `--md` — appended automatically.
 
 **CLI introspection:** `basecamp <cmd> --agent --help` returns structured JSON with subcommands and flags. Use via `basecamp_run` to discover flags for anything not covered by a specific tool.
+
+**Errors:** the CLI prints its error envelope — `{ ok: false, error, code, meta: { request_id } }` — to **stdout**, not stderr, and exits with the code matching `code`. Tool errors are returned as `Basecamp error [<code>/exit <n>]: <message>`, with a remediation hint and the request ID where available.
+
+| Exit | Code | Meaning |
+| ---- | ---- | ------- |
+| 0 | — | success |
+| 1 | `usage` | invalid arguments or flags |
+| 2 | `not_found` | resource not found |
+| 3 | `auth_required` | not authenticated |
+| 4 | `forbidden` | access denied (scope issue) |
+| 5 | `rate_limit` | rate limited (429) |
+| 6 | `network` | connection/DNS/timeout error |
+| 7 | `api_error` | server returned an error |
+| 8 | `ambiguous` | a name matched several records |
+| 9 | `validation` | validation error (422) — CLI v0.9.1+ |
+| 10 | `limit_exceeded` | account limit reached (507) — CLI v0.9.1+ |
+
+Codes 9 and 10 are new in CLI v0.9.1; on earlier versions both collapsed into `api_error`/7. Because *every* failure arrives as JSON on stdout, code that tolerates a nonzero exit (the `lenient` option in `runBasecamp`) must check `ok !== false` before treating the payload as data — otherwise a failed call is indistinguishable from an empty result.
