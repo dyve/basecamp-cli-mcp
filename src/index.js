@@ -1043,6 +1043,52 @@ addTool("list_uploads",
   }
 );
 
+addTool("list_upload_versions",
+  "List every version of an uploaded file. Replacing a file (see replace_upload) keeps the earlier copies " +
+  "as versions of the same upload, so the upload ID stays stable while its contents change. " +
+  "Each item is a version, not an upload: its id is a version ID and download_url points at that specific " +
+  "version — exactly one item has current=true. Requires CLI v0.9.1+.",
+  {
+    id: z.string().describe("Upload ID or full Basecamp URL"),
+    project: z.string().optional().describe("Project ID or name (required when passing a bare ID)"),
+    all: z.boolean().optional().describe("Fetch all versions; sets page.has_more=false"),
+    limit: z.number().int().optional().describe("Max results"),
+    page: z.number().int().optional().describe("Page number"),
+  },
+  async ({ id, project, all, limit, page }) => {
+    const args = ["files", "versions", id];
+    if (project) args.push("--project", project);
+    if (all) args.push("--all");
+    else if (limit != null) args.push("--limit", String(limit));
+    if (page != null) args.push("--page", String(page));
+    // CLI's own no-limit default is "fetch all" (0 = all), not a capped page.
+    return ok(wrapPaginated(await runBasecamp(args), { all: all || limit == null, limit }));
+  }
+);
+
+addTool("replace_upload",
+  "Replace an uploaded file with a new version from a local file path. The upload keeps its ID, URL and " +
+  "comments; the previous file becomes a past version (list them with list_upload_versions). " +
+  "Use this instead of a fresh upload when publishing a new build of the same file, so its published link " +
+  "keeps working. Nobody is notified. The existing description carries forward unless description is given; " +
+  "pass an empty string to clear it. Requires CLI v0.9.1+.",
+  {
+    id: z.string().describe("Upload ID or full Basecamp URL"),
+    file: z.string().describe("Path to the local file to publish as the new version"),
+    project: z.string().optional().describe("Project ID or name (required when passing a bare ID)"),
+    base_name: z.string().optional().describe("Rename the file, without its extension — omit to keep the uploaded file's name"),
+    description: z.string().optional().describe("New description (Markdown) — omit to carry the current one forward, empty string to clear it"),
+  },
+  async ({ id, file, project, base_name, description }) => {
+    const args = ["files", "replace", id, file];
+    if (project) args.push("--project", project);
+    if (base_name) args.push("--base-name", base_name);
+    // Distinguish "not given" (carry forward) from an explicit empty string (clear).
+    if (description !== undefined) args.push("--description", description);
+    return ok(await runBasecamp(args));
+  }
+);
+
 // ── SCHEDULE ──────────────────────────────────────────────────────────────────
 
 addTool("list_schedule_entries",
