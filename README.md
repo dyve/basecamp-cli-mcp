@@ -121,6 +121,21 @@ If you use this server with Claude Code and want to stop being prompted for ever
 }
 ```
 
+## Development
+
+`scripts/mcp-call.mjs` calls one tool over stdio and prints the result — the quickest way to verify a change without going through an MCP client:
+
+```bash
+node scripts/mcp-call.mjs --list
+node scripts/mcp-call.mjs list_projects '{"limit": 3}'
+```
+
+It exits 1 when the tool returns an error, so it composes in a shell. Since `BASECAMP_BIN` is inherited, pointing it at a stub binary exercises error paths that are hard to trigger against live data:
+
+```bash
+BASECAMP_BIN=./stub-cli node scripts/mcp-call.mjs show_todo '{"id": "1"}'
+```
+
 ## Environment
 
 | Variable | Default | Description |

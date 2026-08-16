@@ -104,6 +104,8 @@ AI agent (Claude Desktop / Cowork)
 
 Single file: `src/index.js`. All tools registered with `addTool(name, description, schema, handler)`.
 
+`scripts/mcp-call.mjs` is the only other executable — a dependency-free stdio MCP client for calling one tool by hand (`node scripts/mcp-call.mjs <tool> '<json>'`, or `--list`). Use it to verify a change end to end through the server rather than by running the CLI directly, which skips every wrapper this project exists to provide. It inherits `BASECAMP_BIN`, so a stub binary emitting a chosen error envelope and exit code covers the failure paths live data will not produce on demand.
+
 ## Key behaviors for agents
 
 **Pagination:** every `list_*` response includes `page.has_more`. Do not claim completeness unless it is `false`.
