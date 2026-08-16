@@ -43,7 +43,7 @@ Both verified live against the sandbox project: create → `replace_upload` → 
 
 ### Still not wired up as dedicated tools (CLI v0.9.1)
 
-Reachable today via `basecamp_run`, listed so a future pass knows they exist. `files versions` and `files replace` have moved off this list — they are now `list_upload_versions` and `replace_upload`.
+Reachable today via `basecamp_run`, listed so a future pass knows they exist. `files versions` and `files replace` have moved off this list — they are now `list_upload_versions` and `replace_upload`. The list is now also tracked as issue [#8](https://github.com/dyve/basecamp-cli-mcp/issues/8), since keeping it only in a released changelog section is what let it drift.
 
 - `files uploads create` — creating an upload, the natural companion to `replace_upload` ([#7](https://github.com/dyve/basecamp-cli-mcp/issues/7))
 - `cards wormholes list/create/update/delete` — needed to discover valid `to_wormhole` targets for `move_card`
