@@ -73,7 +73,7 @@ Wraps `recordings list --type TYPE`. Unlike `search`, it is exhaustive for a giv
 
 `update_card` and the full step lifecycle (`list_steps`, `create_step`, `complete_step`, `uncomplete_step`, `update_step`, `move_step`, `delete_step`) are not in the official skill reference.
 
-`cards steps <card_id>` does not auto-resolve the project the way `todos show`/`cards show` do — an explicit `--project`/`--in` is required (confirmed still true on CLI v0.8.1). Our tools always pass it via `--in`. There is also no `cards step show` subcommand (confirmed still absent on v0.8.1) — the only way to get a single step's details is `cards steps <card_id> --in <project>` and filtering the returned array for the matching step ID (`type: "Kanban::Step"`).
+`cards steps <card_id>` does not auto-resolve the project the way `todos show`/`cards show` do — an explicit `--project`/`--in` is required (confirmed still true on CLI v0.8.1). Our tools always pass it via `--in`. There is also no `cards step show` subcommand (confirmed still absent on v0.9.1) — the only way to get a single step's details is `cards steps <card_id> --in <project>` and filtering the returned array for the matching step ID (`type: "Kanban::Step"`).
 
 ### 7. Scoped and project-filtered search
 
