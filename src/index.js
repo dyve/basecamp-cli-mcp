@@ -391,7 +391,7 @@ addTool("list_todos",
   },
   async ({ project, list, status, assignee, overdue, all, limit, page }) => {
     const args = ["todos", "list"];
-    if (project) args.push("--in", project);
+    if (project) args.push("--project", project);
     if (list) args.push("--list", list);
     if (status) args.push("--status", status);
     if (assignee) args.push("--assignee", assignee);
@@ -401,7 +401,7 @@ addTool("list_todos",
     if (page != null) args.push("--page", String(page));
     const raw = await runBasecamp(args);
     if (project) return ok(wrapPaginated(raw, { all, limit }));
-    // Account-wide (no --in): CLI groups results by bucket — [{ bucket, todos: [...] }] — not a flat array. Flatten.
+    // Account-wide (no --project): CLI groups results by bucket — [{ bucket, todos: [...] }] — not a flat array. Flatten.
     let parsed;
     try { parsed = JSON.parse(raw); } catch { return ok(raw); }
     const buckets = Array.isArray(parsed.data) ? parsed.data : [];
@@ -432,7 +432,7 @@ addTool("create_todo",
     description: z.string().optional().describe("Extended description (Markdown, @mentions supported)"),
   },
   async ({ content, project, list, assignee, due, description }) => {
-    const args = ["todos", "create", content, "--in", project];
+    const args = ["todos", "create", content, "--project", project];
     if (list) args.push("--list", list);
     if (assignee) args.push("--assignee", assignee);
     if (due) args.push("--due", due);
@@ -512,7 +512,7 @@ addTool("list_todolists",
     page: z.number().int().optional().describe("Page number"),
   },
   async ({ project, all, limit, page }) => {
-    const args = ["todolists", "list", "--in", project];
+    const args = ["todolists", "list", "--project", project];
     if (all) args.push("--all");
     else if (limit != null) args.push("--limit", String(limit));
     if (page != null) args.push("--page", String(page));
@@ -528,7 +528,7 @@ addTool("create_todolist", "Create a new todolist in a project",
     description: z.string().optional().describe("Description"),
   },
   async ({ name, project, description }) => {
-    const args = ["todolists", "create", name, "--in", project];
+    const args = ["todolists", "create", name, "--project", project];
     if (description) args.push("--description", description);
     return ok(await runBasecamp(args));
   }
@@ -547,7 +547,7 @@ addTool("list_messages",
     page: z.number().int().optional().describe("Page number"),
   },
   async ({ project, all, limit, page }) => {
-    const args = ["messages", "list", "--in", project];
+    const args = ["messages", "list", "--project", project];
     if (all) args.push("--all");
     else if (limit != null) args.push("--limit", String(limit));
     if (page != null) args.push("--page", String(page));
@@ -579,7 +579,7 @@ addTool("create_message",
   async ({ title, body, project, subscribe, no_subscribe }) => {
     const args = ["messages", "create", title];
     if (body) args.push(body);
-    args.push("--in", project);
+    args.push("--project", project);
     if (no_subscribe) args.push("--no-subscribe");
     else if (subscribe) args.push("--subscribe", subscribe);
     return ok(await runBasecamp(args));
@@ -598,7 +598,7 @@ addTool("update_message",
   },
   async ({ id, project, title, body, message_board }) => {
     const args = ["messages", "update", id];
-    if (project) args.push("--in", project);
+    if (project) args.push("--project", project);
     if (title) args.push("--title", title);
     if (body) args.push("--body", body);
     if (message_board) args.push("--message-board", message_board);
@@ -618,7 +618,7 @@ addTool("list_cards", "List all active cards in a project's card table. Returns 
     page: z.number().int().optional().describe("Page number"),
   },
   async ({ project, column, card_table, all, limit, page }) => {
-    const args = ["cards", "list", "--in", project];
+    const args = ["cards", "list", "--project", project];
     if (column) args.push("--column", column);
     if (card_table) args.push("--card-table", card_table);
     // Pagination flags require --column (CLI 0.9.0+): without it, cards are merged across
@@ -640,7 +640,7 @@ addTool("list_card_columns",
     card_table: z.string().optional().describe("Card table ID (required if project has multiple tables)"),
   },
   async ({ project, card_table }) => {
-    const args = ["cards", "columns", "--in", project];
+    const args = ["cards", "columns", "--project", project];
     if (card_table) args.push("--card-table", card_table);
     return ok(wrapPaginated(await runBasecamp(args), { all: true }));
   }
@@ -661,7 +661,7 @@ addTool("create_card", "Create a new card in a project's card table",
   async ({ title, project, body, column }) => {
     const args = ["cards", "create", title];
     if (body) args.push(body);
-    args.push("--in", project);
+    args.push("--project", project);
     if (column) args.push("--column", column);
     return ok(await runBasecamp(args));
   }
@@ -676,7 +676,7 @@ addTool("move_card", "Move a single card to a different column, or to a differen
     to_wormhole: z.string().optional().describe(
       "Teleport the card to a different project through a wormhole (wormhole ID or destination-column URL). " +
       "Asynchronous: the card disappears from this project once the server files it into the destination. " +
-      "Find valid wormholes with basecamp_run [\"cards\", \"wormholes\", \"list\", \"--in\", project]."
+      "Find valid wormholes with basecamp_run [\"cards\", \"wormholes\", \"list\", \"--project\", project]."
     ),
     project: z.string().optional().describe("Project ID or name (required when using column name)"),
     card_table: z.string().optional().describe("Card table ID (required if project has multiple tables and using column name)"),
@@ -687,7 +687,7 @@ addTool("move_card", "Move a single card to a different column, or to a differen
     if (position != null) args.push("--position", String(position));
     if (on_hold) args.push("--on-hold");
     if (to_wormhole) args.push("--to-wormhole", to_wormhole);
-    if (project) args.push("--in", project);
+    if (project) args.push("--project", project);
     if (card_table) args.push("--card-table", card_table);
     return ok(await runBasecamp(args));
   }
@@ -713,7 +713,7 @@ addTool("move_cards",
         if (to) args.push("--to", to);
         if (position != null) args.push("--position", String(position));
         if (on_hold) args.push("--on-hold");
-        if (project) args.push("--in", project);
+        if (project) args.push("--project", project);
         if (card_table) args.push("--card-table", card_table);
         return runBasecamp(args);
       })
@@ -738,7 +738,7 @@ addTool("update_card", "Update an existing card (title, body, assignee, due date
     if (body) args.push("--body", body);
     if (assignee) args.push("--assignee", assignee);
     if (due) args.push("--due", due);
-    if (project) args.push("--in", project);
+    if (project) args.push("--project", project);
     if (card_table) args.push("--card-table", card_table);
     return ok(await runBasecamp(args));
   }
@@ -757,7 +757,7 @@ addTool("list_steps", "List all steps (checklist items) on a card",
     const cardId = parsed ? parsed.cardId : card;
     const resolvedProject = project ?? parsed?.projectId;
     const args = ["cards", "steps", cardId];
-    if (resolvedProject) args.push("--in", resolvedProject);
+    if (resolvedProject) args.push("--project", resolvedProject);
     if (card_table) args.push("--card-table", card_table);
     return ok(await runBasecamp(args));
   }
@@ -779,7 +779,7 @@ addTool("create_step", "Add a new step (checklist item) to a card",
     const args = ["cards", "step", "create", title, "--card", cardId];
     if (assignees) args.push("--assignees", assignees);
     if (due) args.push("--due", due);
-    if (resolvedProject) args.push("--in", resolvedProject);
+    if (resolvedProject) args.push("--project", resolvedProject);
     if (card_table) args.push("--card-table", card_table);
     return ok(await runBasecamp(args));
   }
@@ -793,7 +793,7 @@ addTool("complete_step", "Mark a card step as completed",
   },
   async ({ id, project, card_table }) => {
     const args = ["cards", "step", "complete", id];
-    if (project) args.push("--in", project);
+    if (project) args.push("--project", project);
     if (card_table) args.push("--card-table", card_table);
     return ok(await runBasecamp(args));
   }
@@ -807,7 +807,7 @@ addTool("uncomplete_step", "Mark a card step as not completed",
   },
   async ({ id, project, card_table }) => {
     const args = ["cards", "step", "uncomplete", id];
-    if (project) args.push("--in", project);
+    if (project) args.push("--project", project);
     if (card_table) args.push("--card-table", card_table);
     return ok(await runBasecamp(args));
   }
@@ -827,7 +827,7 @@ addTool("update_step", "Update a card step (title, assignees, due date)",
     if (title) args.push(title);
     if (assignees) args.push("--assignees", assignees);
     if (due) args.push("--due", due);
-    if (project) args.push("--in", project);
+    if (project) args.push("--project", project);
     if (card_table) args.push("--card-table", card_table);
     return ok(await runBasecamp(args));
   }
@@ -846,7 +846,7 @@ addTool("move_step", "Reposition a step within a card (0-indexed)",
     const cardId = parsed ? parsed.cardId : card;
     const resolvedProject = project ?? parsed?.projectId;
     const args = ["cards", "step", "move", id, "--card", cardId, "--position", String(position)];
-    if (resolvedProject) args.push("--in", resolvedProject);
+    if (resolvedProject) args.push("--project", resolvedProject);
     if (card_table) args.push("--card-table", card_table);
     return ok(await runBasecamp(args));
   }
@@ -860,7 +860,7 @@ addTool("delete_step", "Permanently delete a step from a card",
   },
   async ({ id, project, card_table }) => {
     const args = ["cards", "step", "delete", id];
-    if (project) args.push("--in", project);
+    if (project) args.push("--project", project);
     if (card_table) args.push("--card-table", card_table);
     return ok(await runBasecamp(args));
   }
@@ -878,7 +878,7 @@ addTool("list_comments", "List comments on a Basecamp recording (todo, message, 
   },
   async ({ id, project, all, limit, page }) => {
     const args = ["comments", "list", id];
-    if (project) args.push("--in", project);
+    if (project) args.push("--project", project);
     if (all) args.push("--all");
     else if (limit != null) args.push("--limit", String(limit));
     if (page != null) args.push("--page", String(page));
@@ -917,7 +917,7 @@ addTool("add_comment",
   },
   async ({ id, content, project }) => {
     const args = ["comments", "create", id, content];
-    if (project) args.push("--in", project);
+    if (project) args.push("--project", project);
     return ok(await runBasecamp(args));
   }
 );
@@ -933,7 +933,7 @@ addTool("list_files",
     folder: z.string().optional().describe("Folder (vault) ID — omit for project root"),
   },
   async ({ project, folder }) => {
-    const args = ["files", "list", "--in", project];
+    const args = ["files", "list", "--project", project];
     if (folder) args.push("--vault", folder);
     return ok(await runBasecamp(args));
   }
@@ -951,7 +951,7 @@ addTool("show_file",
   },
   async ({ id, project, markdown }) => {
     const args = ["files", "show", id];
-    if (project) args.push("--in", project);
+    if (project) args.push("--project", project);
     return ok(await runBasecamp(args, { markdown: markdown ?? false }));
   }
 );
@@ -968,7 +968,7 @@ addTool("list_documents",
     page: z.number().int().optional().describe("Page number"),
   },
   async ({ project, folder, all, limit, page }) => {
-    const args = ["files", "documents", "list", "--in", project];
+    const args = ["files", "documents", "list", "--project", project];
     if (folder) args.push("--vault", folder);
     if (all) args.push("--all");
     else if (limit != null) args.push("--limit", String(limit));
@@ -991,9 +991,9 @@ addTool("create_document",
     no_subscribe: z.boolean().optional().describe("Create silently, without notifying anyone"),
   },
   async ({ title, content, project, folder, draft, subscribe, no_subscribe }) => {
-    const args = ["docs", "documents", "create", title];
+    const args = ["files", "documents", "create", title];
     if (content) args.push(content);
-    args.push("--in", project);
+    args.push("--project", project);
     if (folder) args.push("--vault", folder);
     if (draft) args.push("--draft");
     if (no_subscribe) args.push("--no-subscribe");
@@ -1013,8 +1013,8 @@ addTool("update_document",
     content: z.string().optional().describe("New body (Markdown supported; replaces existing content)"),
   },
   async ({ id, project, title, content }) => {
-    const args = ["docs", "update", id];
-    if (project) args.push("--in", project);
+    const args = ["files", "update", id];
+    if (project) args.push("--project", project);
     if (title) args.push("--title", title);
     if (content) args.push("--content", content);
     return ok(await runBasecamp(args));
@@ -1033,7 +1033,7 @@ addTool("list_uploads",
     page: z.number().int().optional().describe("Page number"),
   },
   async ({ project, folder, all, limit, page }) => {
-    const args = ["files", "uploads", "list", "--in", project];
+    const args = ["files", "uploads", "list", "--project", project];
     if (folder) args.push("--vault", folder);
     if (all) args.push("--all");
     else if (limit != null) args.push("--limit", String(limit));
@@ -1101,7 +1101,7 @@ addTool("list_schedule_entries",
     page: z.number().int().optional().describe("Page number"),
   },
   async ({ project, all, limit, page }) => {
-    const args = ["schedule", "entries", "--in", project];
+    const args = ["schedule", "entries", "--project", project];
     if (all) args.push("--all");
     else if (limit != null) args.push("--limit", String(limit));
     if (page != null) args.push("--page", String(page));
@@ -1122,7 +1122,7 @@ addTool("list_chat_messages",
     room: z.string().optional().describe("Campfire room ID (for projects with multiple rooms)"),
   },
   async ({ project, limit, room }) => {
-    const args = ["chat", "messages", "--in", project];
+    const args = ["chat", "messages", "--project", project];
     if (limit != null) args.push("--limit", String(limit));
     if (room) args.push("--room", room);
     return ok(wrapPaginated(await runBasecamp(args), { limit }));
@@ -1136,7 +1136,7 @@ addTool("post_chat_message",
     project: z.string().describe("Project ID or name"),
   },
   async ({ message, project }) =>
-    ok(await runBasecamp(["chat", "post", message, "--in", project]))
+    ok(await runBasecamp(["chat", "post", message, "--project", project]))
 );
 
 // ── ASSIGNMENTS & REPORTS ─────────────────────────────────────────────────────
@@ -1434,7 +1434,7 @@ addTool("browse_content",
   },
   async ({ type, project, all, limit, page, sort, status }) => {
     const args = ["recordings", "list", "--type", type];
-    if (project) args.push("--in", project);
+    if (project) args.push("--project", project);
     if (all) args.push("--all");
     else if (limit != null) args.push("--limit", String(limit));
     if (page != null) args.push("--page", String(page));
@@ -1465,7 +1465,7 @@ addTool("get_timeline",
   },
   async ({ project, person, me, limit, page, all, since }) => {
     const baseArgs = me ? ["timeline", "me"] : ["timeline"];
-    if (project) baseArgs.push("--in", project);
+    if (project) baseArgs.push("--project", project);
     if (person) baseArgs.push("--person", person);
 
     if (!since) {
@@ -1577,12 +1577,12 @@ addTool("get_project_overview",
     todo_status: z.enum(["completed", "incomplete"]).optional().describe("Filter todos by status (default: incomplete)"),
   },
   async ({ project, todo_status }) => {
-    const todoArgs = ["todos", "list", "--in", project, "--all", "--status", todo_status ?? "incomplete"];
+    const todoArgs = ["todos", "list", "--project", project, "--all", "--status", todo_status ?? "incomplete"];
 
     const [todos, messages, cards] = await Promise.allSettled([
       runBasecamp(todoArgs, { markdown: true }),
-      runBasecamp(["messages", "list", "--in", project], { markdown: true }),
-      runBasecamp(["cards", "list", "--in", project], { markdown: true }),
+      runBasecamp(["messages", "list", "--project", project], { markdown: true }),
+      runBasecamp(["cards", "list", "--project", project], { markdown: true }),
     ]);
 
     const section = (title, result) => result.status === "fulfilled"
@@ -1606,17 +1606,17 @@ addTool("basecamp_run",
   "accounts, schedule create/update, todos position/sweep, messages pin/publish, " +
   "timesheet, forwards, boost/reactions, tools (project dock), attachments download. " +
   "Do NOT pass --json or --md yourself — they are appended automatically. " +
-  "Pass args as an array, e.g. [\"gauges\", \"list\"] or [\"checkins\", \"questions\", \"--in\", \"MyProject\"].",
+  "Pass args as an array, e.g. [\"gauges\", \"list\"] or [\"checkins\", \"questions\", \"--project\", \"MyProject\"].",
   {
     args: z.array(z.string()).describe(
       "CLI arguments after 'basecamp'. Examples: " +
       "[\"gauges\", \"list\"], " +
       "[\"lineup\", \"list\"], " +
-      "[\"checkins\", \"questions\", \"--in\", \"MyProject\"], " +
+      "[\"checkins\", \"questions\", \"--project\", \"MyProject\"], " +
       "[\"templates\", \"list\"], " +
-      "[\"webhooks\", \"list\", \"--in\", \"MyProject\"], " +
+      "[\"webhooks\", \"list\", \"--project\", \"MyProject\"], " +
       "[\"timesheet\", \"report\"], " +
-      "[\"forwards\", \"list\", \"--in\", \"MyProject\"]"
+      "[\"forwards\", \"list\", \"--project\", \"MyProject\"]"
     ),
     markdown: z.boolean().optional().describe("Use --md (Markdown) output instead of --json"),
     jq: z.string().optional().describe("JQ expression to filter the JSON output, e.g. '.[].title'"),
