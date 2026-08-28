@@ -44,18 +44,76 @@ const ENV = {
 // Node.js error messages display args space-joined without quotes (e.g. "basecamp search foo bar
 // --project 123"), which looks like a shell-quoting issue but is purely a display artifact.
 // Multi-word arguments (queries, project names) are received intact by the CLI.
-async function runBasecamp(args, { markdown = false, jq = null, lenient = false } = {}) {
+// Concurrent `basecamp` processes race reading stored OAuth credentials from the
+// macOS keychain: exactly one wins and the rest exit with
+// `{"code":"auth_required","error":"credentials not found"}`. Measured on CLI
+// v0.9.1 with a valid, non-expiring token: 7/8 failed at 8-way fan-out, 1/2 at
+// 2-way, 0/4 sequential. That broke every parallel path in this server — the
+// bulk todo/card/notification ops and per-project search — and is the real cause
+// of the historical `get_assignments` failure rate.
+//
+// Passing the token to children via BASECAMP_TOKEN skips the keychain entirely;
+// the CLI documents this env var for exactly this purpose (`basecamp auth token
+// --help`). Verified: 8/8 concurrent calls succeed. The token reaches child
+// processes through their environment rather than the keychain, which is the
+// same trust boundary — any process already running as this user could read it.
+let tokenPromise = null;
+
+function authToken() {
+  // A token supplied by the caller's own environment wins; the CLI would prefer
+  // it anyway, and fetching our own would just shadow a deliberate override.
+  if (process.env.BASECAMP_TOKEN) return Promise.resolve(process.env.BASECAMP_TOKEN);
+  // Single-flight. Without it, N concurrent tool calls would each spawn their own
+  // `auth token` process and reproduce the very keychain race this avoids.
+  if (!tokenPromise) {
+    tokenPromise = execFileAsync(BASECAMP_BIN, ["auth", "token"], { env: ENV, timeout: 30000 })
+      .then(({ stdout }) => stdout.trim())
+      .catch(e => { tokenPromise = null; throw e; });
+  }
+  return tokenPromise;
+}
+
+function isAuthFailure(e) {
+  const msg = `${e.stdout ?? ""}${e.stderr ?? ""}${e.message ?? ""}`;
+  return msg.includes("auth_required") || msg.includes("credentials not found");
+}
+
+async function runBasecamp(args, { markdown = false, jq = null, lenient = false, retried = false } = {}) {
   const formatFlag = markdown ? "--md" : "--json";
   const allArgs = jq
     ? [...args, formatFlag, "--jq", jq]
     : [...args, formatFlag];
+  // Fetch on demand rather than at startup, so an unauthenticated CLI still lets
+  // the server boot and report the problem per-call instead of failing to start.
+  // A cached token outlives its expiry on a long-running server; the retry below
+  // is what recovers, since `auth token` refreshes when stored creds are near expiry.
+  let env = ENV;
+  try {
+    env = { ...ENV, BASECAMP_TOKEN: await authToken() };
+  } catch {
+    // Fall through unauthenticated: the real command produces the actionable
+    // error ("Run: basecamp auth login") rather than one about token fetching.
+  }
   try {
     const { stdout } = await execFileAsync(BASECAMP_BIN, allArgs, {
-      env: ENV,
+      env,
       timeout: 30000,
+      // Node's execFile default is 1 MB; real account-wide listings already reach
+      // ~480 KB, and exceeding it throws ERR_CHILD_PROCESS_STDIO_MAXBUFFER, which
+      // surfaces as an opaque "Basecamp error". 10 MB matches the MCP stdio
+      // transport's own ReadBuffer ceiling — a larger response cannot reach the
+      // client anyway.
+      maxBuffer: 10 * 1024 * 1024,
     });
     return stdout.trim();
   } catch (e) {
+    // A cached token that has since expired looks exactly like no credentials at
+    // all. Drop it and let `auth token` refresh from stored creds, once — a second
+    // auth failure is a genuine login problem, not a stale cache.
+    if (!retried && isAuthFailure(e) && !process.env.BASECAMP_TOKEN) {
+      tokenPromise = null;
+      return runBasecamp(args, { markdown, jq, lenient, retried: true });
+    }
     if (lenient) {
       const out = e.stdout?.trim();
       if (out) { try { JSON.parse(out); return out; } catch {} }
@@ -1069,7 +1127,9 @@ addTool("get_overdue_todos",
 );
 
 addTool("get_schedule",
-  "Get upcoming schedule entries across all projects. For a single project's schedule, use list_schedule_entries.",
+  "Get everything upcoming across all projects. For a single project's schedule, use list_schedule_entries. " +
+  "Returns { data: { assignables, schedule_entries, recurring_schedule_entry_occurrences } } — " +
+  "assignables are dated todos/cards, not calendar events, so it is not a flat entry list.",
   {},
   async () => ok(await runBasecamp(["reports", "schedule"]))
 );
@@ -1082,7 +1142,7 @@ addTool("list_notifications",
   "page.has_more is null (unknown); increment page param to fetch the next page.",
   { page: z.number().int().optional().describe("Page number (default: 1)") },
   async ({ page }) => {
-    const args = ["notifications"];
+    const args = ["notifications", "list"];
     if (page && page > 1) args.push("--page", String(page));
     const raw = await runBasecamp(args);
     let parsed;

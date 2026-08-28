@@ -18,6 +18,8 @@ The Basecamp skill is a reference point — useful for checking gaps and as an u
 
 **Speed.** Bulk operations run in parallel via `Promise.allSettled`. Per-project search runs one CLI call per project concurrently. No sequential loops where parallel is safe.
 
+This depends on one non-obvious mechanism: **concurrent `basecamp` processes cannot all read the credential store.** On macOS the keychain read races — exactly one process wins and the rest exit `auth_required` (measured on CLI v0.9.1: 7 of 8 failed at 8-way fan-out, 0 of 4 sequential). `runBasecamp` therefore fetches the token once behind a single-flight promise and hands it to every child via `BASECAMP_TOKEN`, which bypasses the keychain. Do not remove that, and do not add a CLI call path that skips `runBasecamp` — parallelism silently degrades to a ~1/N success rate, which reads as a Basecamp outage rather than a local bug.
+
 **No CLI aliases.** Always call the canonical `group subcommand` form and the full flag name (e.g. `todos create`, `--project`), never a shortcut or alias (e.g. bare `todo`, `--in`). Aliases are more likely to be deprecated or removed between CLI versions than the group noun they alias — the v0.8.0 removal of bare shortcuts (`todo`, `message`, `card`, `comment`, `done`, `reopen`) broke six tools that used them, while the group-noun forms (`todos create`, `todos complete`, etc.) were untouched. Canonical forms are also self-documenting in a diff or log, where an alias like `--in` reads ambiguously next to `--project`.
 
 This is a documentation-only rule for new/changed code going forward — it is **not yet enforced retroactively**. As of 2026-08-05 the codebase still uses `--in` (alias for `--project`) throughout, and possibly other aliases not yet audited for this. Fixing that is a separate, larger cleanup, not bundled into this note.
@@ -117,3 +119,57 @@ Single file: `src/index.js`. All tools registered with `addTool(name, descriptio
 **`basecamp_run`:** last resort for operations without a specific tool: gauges, lineup, check-ins, webhooks, subscriptions, templates, accounts, schedule create/update, todos position/sweep, messages pin/publish, timesheet, forwards, boost/reactions, attachments download. Do not pass `--json` or `--md` — appended automatically.
 
 **CLI introspection:** `basecamp <cmd> --agent --help` returns structured JSON with subcommands and flags. Use via `basecamp_run` to discover flags for anything not covered by a specific tool.
+
+---
+
+## Maintenance
+
+"Maintenance" on this repo means three checks, in this order, as **separate commits**: npm dependencies, Basecamp CLI version, and this server's tools against that CLI. Never bundle a dependency bump with a CLI audit — two independent failure sources make a broken tool ambiguous to diagnose.
+
+### 1. Dependencies
+
+```bash
+npm outdated
+```
+
+- **Minor/patch:** bump, then smoke-test (start the server, call a few tools). Read the `@modelcontextprotocol/sdk` release notes for protocol changes and deprecations — do not blind-bump it.
+- **Major:** its own branch and PR, never bundled. Check the SDK's declared `zod` range (`dependencies` + `peerDependencies` in `node_modules/@modelcontextprotocol/sdk/package.json`) before touching `zod` — the SDK constrains it, and every tool schema in `src/index.js` depends on it.
+
+### 2. Basecamp CLI version
+
+Three values must agree; check all three, not just the first:
+
+```bash
+basecamp --version                                    # installed
+gh release list --repo basecamp/basecamp-cli --limit 5 # latest published
+grep -n 'v0\.' README.md                              # floor this repo declares
+```
+
+Install the latest, then continue to step 3 if the version moved. If installed already equals latest **and** equals the declared floor, maintenance is a no-op for the CLI.
+
+### 3. Audit the tools against the CLI
+
+This is where every real breakage has come from (v0.8.0 killed six tools, v0.9.0 broke three more). It is a mechanical sweep, not a keyword search.
+
+**Read the full commit range, not the release notes.** GitHub release notes are generated from PR titles and undercount severely — v0.9.1's notes listed two PRs, one of which silently absorbed `basecamp-sdk` v0.13.0 → v0.14.0 (partial-update semantics on documents, card steps, schedule, todolist groups, webhooks, plus two new exit codes).
+
+```bash
+gh api repos/basecamp/basecamp-cli/compare/vOLD...vNEW --jq '.commits[].commit.message'
+```
+
+SDK-absorption commits describe their silent breaks explicitly. Read them in full.
+
+**Sweep every invocation.** For each distinct `group subcommand` pair actually used in `src/index.js`, run `basecamp <group> <subcommand> --help` live and diff the flags and positional args against what the code sends. Do not grep the changelog for its own wording and conclude "no usage found" — that exact shortcut shipped six dead tools in the v0.8.1 audit. The removed commands (`todo`, `message`, `card`, `comment`, `done`, `reopen`) were never named in the code the way the changelog named them.
+
+**Live-test in the sandbox.** `--help` cannot catch behavioral or performance regressions. The `get_assignments` bug (an unbounded per-item enrichment subprocess succeeding on 4/161 calls against real account data) appeared in no changelog at all. Exercise changed tools end to end against the sandbox project, then clean up with `recordings trash`.
+
+Prioritize **partial updates**. A field turning into a pointer inside the SDK is invisible at the CLI surface and fails destructively — a title-only update can null the body. Verify both directions: update one field, confirm the others survive.
+
+**Check new surface, not just breakage.** New CLI commands either get a tool or get recorded in the CHANGELOG's deferred list with a reason. See the "Not wired up as dedicated tools" entries — re-triage them each pass rather than letting them rot.
+
+### 4. Close the loop
+
+An audit that does not update the record is not finished. The v0.9.1 audit ran on 2026-08-16 and left `README.md` and `CHANGELOG.md` still claiming v0.9.0.
+
+- Bump the CLI floor in `README.md`.
+- Add a `CHANGELOG.md` entry naming the **exact** version verified against, including a "Verified correct, not a bug" section — negative results are the expensive part of the audit and must not be re-derived next time.

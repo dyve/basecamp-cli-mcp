@@ -5,7 +5,7 @@
 ## Requirements
 
 - Node.js 18+
-- [Basecamp CLI](https://github.com/basecamp/basecamp-cli) v0.9.0+ installed and authenticated (older versions have several breaking CLI incompatibilities — see CHANGELOG.md)
+- [Basecamp CLI](https://github.com/basecamp/basecamp-cli) v0.9.1+ installed and authenticated (older versions have several breaking CLI incompatibilities — see CHANGELOG.md)
 
 ## Setup
 
@@ -126,6 +126,7 @@ If you use this server with Claude Code and want to stop being prompted for ever
 | Variable | Default | Description |
 |---|---|---|
 | `BASECAMP_BIN` | auto-detected | Path to the `basecamp` binary |
+| `BASECAMP_TOKEN` | fetched via `basecamp auth token` | OAuth access token passed to every CLI call. Set it to override; leave unset and the server fetches it once and reuses it, which is required for parallel operations to work (concurrent CLI processes cannot all read the keychain — see CHANGELOG.md). |
 
 ## References
 
