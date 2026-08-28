@@ -149,6 +149,17 @@ Codes 9 and 10 are new in CLI v0.9.1; on earlier versions both collapsed into `a
 
 "Maintenance" on this repo means three checks, in this order, as **separate commits**: npm dependencies, Basecamp CLI version, and this server's tools against that CLI. Never bundle a dependency bump with a CLI audit — two independent failure sources make a broken tool ambiguous to diagnose.
 
+### 0. Check for work already in flight
+
+```bash
+gh pr list --state open
+git branch -a --no-merged main
+```
+
+`git log` on `main` is not the state of this project. An audit can be finished and still be invisible there, sitting in an unmerged PR — read the open PRs before auditing anything, and rebase or close them as part of the pass rather than around it.
+
+This step exists because skipping it cost a full duplicated audit. The v0.9.1 pass of 2026-08-16 landed as an unmerged stack (#3 → #4 → #5); the pass in #10 checked only `main`, concluded the audit had never closed, and redid it from scratch. The repeat missed a bug #3 had already found (`lenient` mode accepting `{ ok: false }` error envelopes as data), re-derived a `get_schedule` finding #5 already had, and — because a duplicate write-up reads as redundant — nearly discarded #5 wholesale, including the response-shape check in step 3 below that #10 had no equivalent of.
+
 ### 1. Dependencies
 
 ```bash
