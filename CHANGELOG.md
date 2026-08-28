@@ -11,6 +11,14 @@ All notable changes to this project are documented in this file.
 - **`runBasecamp` set no `maxBuffer`, leaving Node's 1 MB `execFile` default in force.** Measured against this account: `projects list --all` already returns 479 KB, `notifications list` 415 KB, `todos list --all-projects` 370 KB, `reports overdue` 346 KB. A larger account or a wider `search` crosses 1 MB, at which point `execFile` throws `ERR_CHILD_PROCESS_STDIO_MAXBUFFER` and the tool reports an opaque "Basecamp error" — a truncation-shaped failure blamed on Basecamp, against this project's "no silent failure" design goal. Raised to 10 MB, matching the MCP stdio transport's own `ReadBuffer` ceiling (new in SDK 1.30.0): a response larger than that cannot reach the client regardless.
 - `get_schedule`: description said "upcoming schedule entries", but `reports schedule` returns `data: { assignables, schedule_entries, recurring_schedule_entry_occurrences }` — `assignables` are dated todos and cards, not calendar events. An agent reading the old description would treat the response as a flat entry list. Corrected; the tool itself passes the response through unchanged and needed no code change.
 
+### Added (CLI v0.9.1)
+
+- `list_upload_versions`: lists every version of an uploaded file (`files versions`, new in CLI v0.9.1). Paginated like the other list tools; the CLI's no-limit default is "fetch everything" here too, so a bare call reports `has_more: false`. The description states what the items actually are, since it is easy to misread them as uploads: each item is a *version* — its `id` is a version ID (not the upload's), `download_url` points at that specific version, and exactly one item has `current: true`.
+- `replace_upload`: publishes a new version of an existing upload from a local file (`files replace`, new in CLI v0.9.1). The upload keeps its ID, URL and comments, so a published link keeps working across releases. Nobody is notified. `description` is omitted from the CLI call when the param is absent (the existing description carries forward) and passed through when present, so an explicit empty string clears it — the endpoint's presence semantics, which a plain truthiness check would have collapsed. `base_name` renames without touching the extension.
+- Creating an upload still has no dedicated tool; documented in AGENTS.md as `basecamp_run ["files", "uploads", "create", ...]`.
+
+Both verified live against the sandbox project: create → `replace_upload` → `list_upload_versions` returned both filenames with exactly one current version, `base_name` applied, and the description confirmed to carry forward on omission and clear on an explicit empty string. Test upload trashed afterward.
+
 ### Fixed (CLI v0.9.1 exit-code audit)
 
 - **`lenient` mode in `runBasecamp` silently turned failed calls into empty results.** The CLI prints its error envelope (`{ ok: false, error, code, meta: { request_id } }`) to *stdout*, not stderr, so the lenient path's "stdout parses as JSON → treat it as a payload" test accepted error envelopes as data. Since an error envelope has no `data` array, callers read it as zero items. Concretely: in scoped `search` across several projects, a project whose search failed was counted as searched with no hits and produced **no warning** — `scopes_searched` still listed every scope and `warnings` was empty. Lenient now returns the payload only when `ok !== false`, so genuine failures reach the existing per-project warning path. Verified end to end against a stub CLI emitting an error envelope with a nonzero exit, and confirmed a nonzero exit that still carries a usable payload (lenient's actual purpose) is still returned.
@@ -34,7 +42,7 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
-- New CLI surface in v0.9.1, deliberately not wired up as dedicated tools (reachable today via `basecamp_run`, recorded so a future pass knows it exists): `files versions <upload-id>` (list an upload's version history) and `files replace <upload-id> <file>` (publish a new version of an uploaded file, keeping its ID, URL and comments — the write half of the same story). Also unexposed: `notifications list --limit-bubble-ups` and `docs documents create --visible-to-clients`.
+- New CLI surface in v0.9.1 left unexposed, reachable via `basecamp_run` and recorded so a future pass knows it exists: `notifications list --limit-bubble-ups` and `docs documents create --visible-to-clients`. (`files versions` and `files replace` are exposed as `list_upload_versions` / `replace_upload` — see the Added section above.)
 
 ### Known limitation, unchanged
 
