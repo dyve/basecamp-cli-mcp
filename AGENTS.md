@@ -220,6 +220,7 @@ An audit that does not update the record is not finished. The v0.9.1 audit ran o
 
 Open issues, so these do not live only in a chat log or a changelog entry:
 
+- [#14](https://github.com/dyve/basecamp-cli-mcp/issues/14) — fan-out can now reach Basecamp's own concurrency limit. The keychain race #10 fixed was accidentally throttling it; the ceiling is no longer local. Unbounded in the bulk tools and `search`.
 - [#7](https://github.com/dyve/basecamp-cli-mcp/issues/7) — no tool creates an upload, so `replace_upload` has no counterpart. Deliberate under the scope policy, not an oversight.
 - [#8](https://github.com/dyve/basecamp-cli-mcp/issues/8) — standing list of CLI commands reachable only via `basecamp_run`.
 
