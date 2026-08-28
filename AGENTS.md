@@ -22,7 +22,7 @@ This depends on one non-obvious mechanism: **concurrent `basecamp` processes can
 
 **No CLI aliases.** Always call the canonical `group subcommand` form and the full flag name (e.g. `todos create`, `--project`), never a shortcut or alias (e.g. bare `todo`, `--in`). Aliases are more likely to be deprecated or removed between CLI versions than the group noun they alias — the v0.8.0 removal of bare shortcuts (`todo`, `message`, `card`, `comment`, `done`, `reopen`) broke six tools that used them, while the group-noun forms (`todos create`, `todos complete`, etc.) were untouched. Canonical forms are also self-documenting in a diff or log, where an alias like `--in` reads ambiguously next to `--project`.
 
-This is a documentation-only rule for new/changed code going forward — it is **not yet enforced retroactively**. As of 2026-08-05 the codebase still uses `--in` (alias for `--project`) throughout, and possibly other aliases not yet audited for this. Fixing that is a separate, larger cleanup, not bundled into this note.
+This is a documentation-only rule for new/changed code going forward — it is **not yet enforced retroactively**. The retroactive audit was done on 2026-08-16 against CLI v0.9.1: 36 uses of `--in` instead of `--project`, and 2 uses of the `docs` command tree instead of `files` (`create_document`, `update_document`). No other aliases in use. Tracked as [#6](https://github.com/dyve/basecamp-cli-mcp/issues/6); fixing it is a separate mechanical cleanup, not bundled into any feature PR.
 
 ## Scope policy
 
@@ -73,7 +73,7 @@ Wraps `recordings list --type TYPE`. Unlike `search`, it is exhaustive for a giv
 
 `update_card` and the full step lifecycle (`list_steps`, `create_step`, `complete_step`, `uncomplete_step`, `update_step`, `move_step`, `delete_step`) are not in the official skill reference.
 
-`cards steps <card_id>` does not auto-resolve the project the way `todos show`/`cards show` do — an explicit `--project`/`--in` is required (confirmed still true on CLI v0.8.1). Our tools always pass it via `--in`. There is also no `cards step show` subcommand (confirmed still absent on v0.8.1) — the only way to get a single step's details is `cards steps <card_id> --in <project>` and filtering the returned array for the matching step ID (`type: "Kanban::Step"`).
+`cards steps <card_id>` does not auto-resolve the project the way `todos show`/`cards show` do — an explicit `--project`/`--in` is required (confirmed still true on CLI v0.8.1). Our tools always pass it via `--in`. There is also no `cards step show` subcommand (confirmed still absent on v0.9.1) — the only way to get a single step's details is `cards steps <card_id> --in <project>` and filtering the returned array for the matching step ID (`type: "Kanban::Step"`).
 
 ### 7. Scoped and project-filtered search
 
@@ -184,9 +184,13 @@ SDK-absorption commits describe their silent breaks explicitly. Read them in ful
 
 **Sweep every invocation.** For each distinct `group subcommand` pair actually used in `src/index.js`, run `basecamp <group> <subcommand> --help` live and diff the flags and positional args against what the code sends. Do not grep the changelog for its own wording and conclude "no usage found" — that exact shortcut shipped six dead tools in the v0.8.1 audit. The removed commands (`todo`, `message`, `card`, `comment`, `done`, `reopen`) were never named in the code the way the changelog named them.
 
+A flag does not have to disappear to break a call. It can become positional (`reports assigned --assignee` → positional `person`), or stay accepted and be silently ignored (`reports overdue --project` is an inherited global the subcommand never consumes — a bogus project ID returns the same unfiltered result as no filter).
+
 **Live-test in the sandbox.** `--help` cannot catch behavioral or performance regressions. The `get_assignments` bug (an unbounded per-item enrichment subprocess succeeding on 4/161 calls against real account data) appeared in no changelog at all. Exercise changed tools end to end against the sandbox project, then clean up with `recordings trash`.
 
 Prioritize **partial updates**. A field turning into a pointer inside the SDK is invisible at the CLI surface and fails destructively — a title-only update can null the body. Verify both directions: update one field, confirm the others survive.
+
+**Verify the response shape, not just the flags and the exit code.** Shape changes are what actually break this server, because tools parse the envelope: `todos list` gaining bucket grouping, `reports assigned` regrouping, `UpcomingScheduleResponse` renaming its container to `assignables`. A tool that passes the CLI response straight through survives all of these; one that counts, filters or flattens does not — so the sweep must cover what each tool *does with* the response, not only the arguments it sends.
 
 **Check new surface, not just breakage.** New CLI commands either get a tool or get recorded in the CHANGELOG's deferred list with a reason. See the "Not wired up as dedicated tools" entries — re-triage them each pass rather than letting them rot.
 
@@ -196,3 +200,15 @@ An audit that does not update the record is not finished. The v0.9.1 audit ran o
 
 - Bump the CLI floor in `README.md`.
 - Add a `CHANGELOG.md` entry naming the **exact** version verified against, including a "Verified correct, not a bug" section — negative results are the expensive part of the audit and must not be re-derived next time.
+
+---
+
+## Known gaps
+
+Open issues, so these do not live only in a chat log or a changelog entry:
+
+- [#6](https://github.com/dyve/basecamp-cli-mcp/issues/6) — 36 `--in` and 2 `docs` alias uses contradict the no-alias rule above. Works today; exactly the shape of the v0.8.0 breakage.
+- [#7](https://github.com/dyve/basecamp-cli-mcp/issues/7) — no tool creates an upload, so `replace_upload` has no counterpart. Deliberate under the scope policy, not an oversight.
+- [#8](https://github.com/dyve/basecamp-cli-mcp/issues/8) — standing list of CLI commands reachable only via `basecamp_run`.
+
+`delete_project` is excluded by design. Not a gap — do not add it.

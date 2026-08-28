@@ -28,7 +28,7 @@ Both verified live against the sandbox project: create → `replace_upload` → 
 
 ### Changed
 
-- **Requires Basecamp CLI v0.9.1+** (was v0.9.0). v0.9.1 absorbed basecamp-sdk v0.13.0 → v0.14.0, whose partial-update semantics affect `update_document` and `update_step`; both verified below. Its GitHub release notes list only two PRs and do not mention the SDK bump at all — the commit range does.
+- **Requires Basecamp CLI v0.9.1+** (was v0.9.0). It is the floor because `list_upload_versions` and `replace_upload` wrap commands that do not exist before it, and because exit codes 9 (`validation`) and 10 (`limit_exceeded`) are only distinguishable from `api_error`/7 there. v0.9.1 also absorbed basecamp-sdk v0.13.0 → v0.14.0, whose partial-update semantics affect `update_document` and `update_step`; both verified below. Its GitHub release notes list only two PRs and do not mention the SDK bump at all — the commit range does. (The v0.9.0 auth-scope change is recorded under that version below.)
 - `@modelcontextprotocol/sdk` 1.29.0 → 1.30.0, plus `npm audit fix` for transitive advisories in the SDK's HTTP-transport dependencies (`hono`, `ip-address` via `express-rate-limit`, `qs`). None were reachable on stdio, but all are resolved in-range; `npm audit` now reports 0 vulnerabilities. `zod` deliberately left at 3.25.76 — 4.4.3 is available and SDK 1.30.0 permits `^3.25 || ^4.0`, but a major bump across every tool schema is its own change, not a maintenance-pass rider.
 
 ### Verified correct, not a bug (CLI v0.9.1)
@@ -38,11 +38,25 @@ Both verified live against the sandbox project: create → `replace_upload` → 
 - The new exit codes (422 → 9 validation, 507 → 10 limit_exceeded, previously both collapsed to 7) break nothing on their own — `runBasecamp` never inspected exit codes. They did, however, need handling, which is what the exit-code audit above adds: because the CLI reports *every* failure as JSON on stdout, discarding the code left `lenient` mode unable to tell a failure from an empty result.
 - All 57 distinct `group subcommand` invocations in `src/index.js` exist on v0.9.1, and every flag each tool sends appears in that subcommand's live `--help` (checked mechanically, one help dump per invocation). Positional arguments re-confirmed by hand for the commands that take them — `todos create <content>`, `messages create <title> [body]`, `cards create <title> [body]`, `comments create <id> <content>`, `docs documents create <title> [content]`, `cards step create <title> --card`, `cards step update <id> [title]`, `todolists create <name>`, `projects create <name>`, `url parse <url>`, `reports assigned [person]`.
 - `comments thread` still exists despite v0.9.1 deleting the SDK's `FetchCommentThread` and the `Recordings().Get` it called — the command was rerouted, not removed.
-- `webhooks update --types`, `gauges list` result wrappers, and `schedule create`/`update` local timestamp revalidation all changed in the SDK absorption but are reachable only through `basecamp_run`, which passes responses through without shape-specific logic.
+- `cards step show` is still absent (re-confirmed on v0.9.1) — `cards steps <card_id>` plus a client-side filter remains the only way to read one step.
+- Not reachable except through `basecamp_run`, so nothing here to break, but worth knowing the semantics moved: `schedule create`/`update` (pointer fields; timestamps now revalidated locally as RFC 3339 or a bare date), `gauges list` (options and result wrappers), `todolists groups update` (routed to the merge-safe todolists endpoint), `webhooks update` (an all-blank `--types` no longer serializes as an empty list that clears the subscription roster), and `files update` on an upload (`UpdateUploadRequest.Description` is now a pointer).
 
-### Added
+### Still not wired up as dedicated tools (CLI v0.9.1)
 
-- New CLI surface in v0.9.1 left unexposed, reachable via `basecamp_run` and recorded so a future pass knows it exists: `notifications list --limit-bubble-ups` and `docs documents create --visible-to-clients`. (`files versions` and `files replace` are exposed as `list_upload_versions` / `replace_upload` — see the Added section above.)
+Reachable today via `basecamp_run`, listed so a future pass knows they exist. `files versions` and `files replace` have moved off this list — they are now `list_upload_versions` and `replace_upload`. The list is now also tracked as issue [#8](https://github.com/dyve/basecamp-cli-mcp/issues/8), since keeping it only in a released changelog section is what let it drift.
+
+- `files uploads create` — creating an upload, the natural companion to `replace_upload` ([#7](https://github.com/dyve/basecamp-cli-mcp/issues/7))
+- `cards wormholes list/create/update/delete` — needed to discover valid `to_wormhole` targets for `move_card`
+- `cards list --all-projects` — account-wide Kanban card listing with its own assignee/due/unassigned filters
+- `todos list --all-projects` / `--due <with|without|overdue>` / `--unassigned` / `--no-due-date` — account-wide server-side filters
+- `reports schedule --start` / `--end` — custom date window
+- `comments list --all-projects`, `comments thread`
+- `files list --all-projects --kind --person`
+- `notifications bubbleups`, `notifications list --limit-bubble-ups`
+- `docs documents create --visible-to-clients`
+- top-level `assign` / `unassign` shortcuts
+
+Standing backlog: [#8](https://github.com/dyve/basecamp-cli-mcp/issues/8).
 
 ### Known limitation, unchanged
 
@@ -75,7 +89,7 @@ Both verified live against the sandbox project: create → `replace_upload` → 
 ### Audited and confirmed unaffected (CLI v0.9.0)
 
 - `chat`, `checkins`, `webhooks`, `subscriptions`, `templates`, `gauges`, `lineup`, `accounts`, `hillcharts`, `cards wormholes` — only reachable via `basecamp_run`, no shape-specific logic to break.
-- Not wired up as dedicated tools (all reachable today via `basecamp_run`, listed here so a future pass knows they exist): `cards list --all-projects` (account-wide Kanban card listing with its own assignee/due/unassigned filters, the card-table analog of the `todos list` account-wide filtering below), `todos list --all-projects`/`--due <with|without|overdue>`/`--unassigned`/`--no-due-date` (new account-wide, server-side filters), `reports schedule --start`/`--end` (custom date window), `cards wormholes list/create/update/delete` (needed to discover valid `--to-wormhole` targets), `comments list --all-projects`/`comments thread`, `files list --all-projects --kind --person`, `notifications bubbleups`, top-level `assign`/`unassign` shortcuts.
+- Commands with no dedicated tool were catalogued in this pass; the list is maintained under "Still not wired up as dedicated tools (CLI v0.9.1)" above rather than duplicated here.
 
 ### Fixed
 
