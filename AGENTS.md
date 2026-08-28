@@ -22,7 +22,9 @@ This depends on one non-obvious mechanism: **concurrent `basecamp` processes can
 
 **No CLI aliases.** Always call the canonical `group subcommand` form and the full flag name (e.g. `todos create`, `--project`), never a shortcut or alias (e.g. bare `todo`, `--in`). Aliases are more likely to be deprecated or removed between CLI versions than the group noun they alias — the v0.8.0 removal of bare shortcuts (`todo`, `message`, `card`, `comment`, `done`, `reopen`) broke six tools that used them, while the group-noun forms (`todos create`, `todos complete`, etc.) were untouched. Canonical forms are also self-documenting in a diff or log, where an alias like `--in` reads ambiguously next to `--project`.
 
-This is a documentation-only rule for new/changed code going forward — it is **not yet enforced retroactively**. The retroactive audit was done on 2026-08-16 against CLI v0.9.1: 36 uses of `--in` instead of `--project`, and 2 uses of the `docs` command tree instead of `files` (`create_document`, `update_document`). No other aliases in use. Tracked as [#6](https://github.com/dyve/basecamp-cli-mcp/issues/6); fixing it is a separate mechanical cleanup, not bundled into any feature PR.
+**Enforced throughout as of 2026-08-28** ([#6](https://github.com/dyve/basecamp-cli-mcp/issues/6)). The retroactive cleanup renamed 36 `--in` to `--project` and moved 2 invocations off the `docs` command tree onto `files` (`create_document`, `update_document`). `src/index.js` now contains neither form anywhere — including inside tool descriptions, where the `basecamp_run` examples had been teaching agents the alias. A grep for `--in` or a `docs` invocation is a regression.
+
+Note that `docs` was never an alias in the cobra sense: `basecamp files --help` reports `ALIASES: files, file`, while `basecamp docs --help` reports `ALIASES: docs, documents`. They are two separately registered trees with identical subcommands (verified by diffing their help output, and that of `update` and `documents create`). Only `files` appears in the top-level `basecamp --help`, which is what makes it the canonical one.
 
 ## Scope policy
 
@@ -73,7 +75,7 @@ Wraps `recordings list --type TYPE`. Unlike `search`, it is exhaustive for a giv
 
 `update_card` and the full step lifecycle (`list_steps`, `create_step`, `complete_step`, `uncomplete_step`, `update_step`, `move_step`, `delete_step`) are not in the official skill reference.
 
-`cards steps <card_id>` does not auto-resolve the project the way `todos show`/`cards show` do — an explicit `--project`/`--in` is required (confirmed still true on CLI v0.8.1). Our tools always pass it via `--in`. There is also no `cards step show` subcommand (confirmed still absent on v0.9.1) — the only way to get a single step's details is `cards steps <card_id> --in <project>` and filtering the returned array for the matching step ID (`type: "Kanban::Step"`).
+`cards steps <card_id>` does not auto-resolve the project the way `todos show`/`cards show` do — an explicit `--project` is required (confirmed still true on CLI v0.9.1). Our tools always pass it. There is also no `cards step show` subcommand (confirmed still absent on v0.9.1) — the only way to get a single step's details is `cards steps <card_id> --project <project>` and filtering the returned array for the matching step ID (`type: "Kanban::Step"`).
 
 ### 7. Scoped and project-filtered search
 
@@ -218,7 +220,6 @@ An audit that does not update the record is not finished. The v0.9.1 audit ran o
 
 Open issues, so these do not live only in a chat log or a changelog entry:
 
-- [#6](https://github.com/dyve/basecamp-cli-mcp/issues/6) — 36 `--in` and 2 `docs` alias uses contradict the no-alias rule above. Works today; exactly the shape of the v0.8.0 breakage.
 - [#7](https://github.com/dyve/basecamp-cli-mcp/issues/7) — no tool creates an upload, so `replace_upload` has no counterpart. Deliberate under the scope policy, not an oversight.
 - [#8](https://github.com/dyve/basecamp-cli-mcp/issues/8) — standing list of CLI commands reachable only via `basecamp_run`.
 
