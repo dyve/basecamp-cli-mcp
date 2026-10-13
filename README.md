@@ -5,7 +5,7 @@
 ## Requirements
 
 - Node.js 18+
-- [Basecamp CLI](https://github.com/basecamp/basecamp-cli) v0.9.1+ installed and authenticated (older versions have several breaking CLI incompatibilities — see CHANGELOG.md)
+- [Basecamp CLI](https://github.com/basecamp/basecamp-cli) v0.13.2+ installed and authenticated (older versions have several breaking CLI incompatibilities — see CHANGELOG.md)
 
 ## Setup
 

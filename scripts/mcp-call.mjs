@@ -54,10 +54,18 @@ const timer = setTimeout(() => {
 
 const send = (msg) => child.stdin.write(JSON.stringify(msg) + "\n");
 
+// process.exit() does not wait for stdout: when it is a pipe, writes are asynchronous, and exiting
+// at once cut piped results off at the pipe buffer (~64 KB) — a truncation a redirect to a file
+// never showed. Exit from the callback of an empty write instead, which fires only after every
+// earlier write has flushed. `finished` keeps the killed child's exit event from reporting a
+// failure while that flush is pending.
+let finished = false;
 const finish = (code) => {
+  if (finished) return;
+  finished = true;
   clearTimeout(timer);
   child.kill();
-  process.exit(code);
+  process.stdout.write("", () => process.exit(code));
 };
 
 // Every result payload is a string; pretty-print it when it happens to be JSON, since most tools
@@ -94,11 +102,11 @@ child.stdout.on("data", (chunk) => {
     } else if (msg.id === 2) {
       if (msg.error) {
         console.error(`protocol error: ${msg.error.message}`);
-        finish(1);
+        return finish(1);
       }
       if (tool === "--list") {
         for (const t of msg.result.tools) console.log(t.name);
-        finish(0);
+        return finish(0);
       }
       for (const part of msg.result.content ?? []) {
         if (part.type === "text") print(part.text);

@@ -65,10 +65,13 @@ const EXIT_CODE_HINTS = {
   limit_exceeded: "an account limit was reached (HTTP 507); the request cannot be retried as-is",
 };
 
-// Parses a failed CLI invocation into { code, exit, message, request_id }.
-// On any error the CLI prints its envelope — { ok: false, error, code, meta: { request_id } } —
+// Parses a failed CLI invocation into { code, exit, message, request_id, retryable }.
+// On any error the CLI prints its envelope — { ok: false, error, code, retryable, meta: { request_id } } —
 // to stdout, not stderr, and exits with the code matching `code`. Process-level failures
 // (missing binary, timeout) have no envelope; Node reports those in `e.code` as a string.
+// `retryable` is the CLI's own classification (CLI v0.10.0+, basecamp-cli#665): true for 5xx,
+// network, rate-limit and similar transient failures. false means no known reason a retry would
+// help, not proof of permanence; null means no envelope or an older CLI.
 function describeCliError(e) {
   const exit = typeof e?.code === "number" ? e.code : null;
   let envelope = null;
@@ -81,6 +84,7 @@ function describeCliError(e) {
       exit,
       message: envelope.error ?? "unknown error",
       request_id: envelope.meta?.request_id ?? null,
+      retryable: typeof envelope.retryable === "boolean" ? envelope.retryable : null,
     };
   }
   return {
@@ -88,14 +92,16 @@ function describeCliError(e) {
     exit,
     message: e?.stderr?.trim() || out || e?.message || String(e),
     request_id: null,
+    retryable: null,
   };
 }
 
 // One-line rendering of describeCliError, for tool errors and per-project warnings.
+// Only a positive retryable is shown: "not retryable" would overstate what false means.
 function formatCliError(e) {
-  const { code, exit, message, request_id } = describeCliError(e);
+  const { code, exit, message, request_id, retryable } = describeCliError(e);
   const hint = EXIT_CODE_HINTS[code];
-  const label = exit != null ? `${code}/exit ${exit}` : code;
+  const label = (exit != null ? `${code}/exit ${exit}` : code) + (retryable === true ? ", retryable" : "");
   return `[${label}]: ${message}`
     + (hint ? ` — ${hint}` : "")
     + (request_id ? ` (request_id: ${request_id})` : "");
@@ -272,13 +278,9 @@ function collectResults(ids, settled) {
   settled.forEach((r, i) => {
     if (r.status === "fulfilled") succeeded.push(ids[i]);
     else {
-      const e = r.reason;
-      let reason = e?.stderr?.trim() || e?.stdout?.trim() || e?.message;
-      // CLI returns JSON errors on stdout — extract the error field if present
-      if (reason) {
-        try { const j = JSON.parse(reason); if (j.error) reason = j.error; } catch {}
-      }
-      failed.push({ id: ids[i], reason });
+      // retryable lets an agent re-run just the transient failures; see describeCliError for its meaning.
+      const { message, retryable } = describeCliError(r.reason);
+      failed.push({ id: ids[i], reason: message, retryable });
     }
   });
   return { succeeded, failed };
@@ -311,6 +313,20 @@ function flattenGroupedResponse(data, fieldName = "group") {
     items.push(...data[key].map(item => ({ ...item, [fieldName]: key })));
   }
   return items;
+}
+
+// Shared `format` param for every tool whose CLI command takes rich text. Since CLI v0.12.0
+// (basecamp-cli#832) rich text is always read as Markdown unless --format html says otherwise; it
+// used to be passed through untouched when it contained HTML. An agent that reads a body as HTML
+// from a show tool and writes it back can now have it rewritten: indented lines become code blocks,
+// `*x*` italics, `# x` headings, `1. x` lists (verified in the sandbox on v0.13.2).
+const formatParam = z.enum(["markdown", "html"]).optional().describe(
+  "How rich-text content is read: 'markdown' (default) is converted to HTML; 'html' is sent exactly as written. " +
+  "Use 'html' when writing back an HTML body read from a show tool, so Markdown syntax in it is not reinterpreted."
+);
+
+function pushFormat(args, format) {
+  if (format) args.push("--format", format);
 }
 
 // ── URL PARSING ──────────────────────────────────────────────────────────────
@@ -430,20 +446,22 @@ addTool("create_todo",
     assignee: z.string().optional().describe("Assignee name, ID, or 'me'"),
     due: z.string().optional().describe("Due date: YYYY-MM-DD or natural language like 'next friday', 'tomorrow', '+3'"),
     description: z.string().optional().describe("Extended description (Markdown, @mentions supported)"),
+    format: formatParam,
   },
-  async ({ content, project, list, assignee, due, description }) => {
+  async ({ content, project, list, assignee, due, description, format }) => {
     const args = ["todos", "create", content, "--project", project];
     if (list) args.push("--list", list);
     if (assignee) args.push("--assignee", assignee);
     if (due) args.push("--due", due);
     if (description) args.push("--description", description);
+    pushFormat(args, format);
     return ok(await runBasecamp(args));
   }
 );
 
 addTool("complete_todos",
   "Mark one or more todos as complete in parallel. " +
-  "Returns { succeeded: [id, ...], failed: [{ id, reason }, ...] }.",
+  "Returns { succeeded: [id, ...], failed: [{ id, reason, retryable }, ...] }.",
   { ids: z.array(z.string()).min(1).describe("Todo ID(s) or Basecamp URL(s)") },
   async ({ ids }) => {
     const results = await Promise.allSettled(ids.map(id => runBasecamp(["todos", "complete", id])));
@@ -453,7 +471,7 @@ addTool("complete_todos",
 
 addTool("reopen_todos",
   "Uncomplete (reopen) one or more todos in parallel. " +
-  "Returns { succeeded: [id, ...], failed: [{ id, reason }, ...] }.",
+  "Returns { succeeded: [id, ...], failed: [{ id, reason, retryable }, ...] }.",
   { ids: z.array(z.string()).min(1).describe("Todo ID(s) or Basecamp URL(s)") },
   async ({ ids }) => {
     const results = await Promise.allSettled(ids.map(id => runBasecamp(["todos", "uncomplete", id])));
@@ -468,8 +486,9 @@ addTool("update_todo", "Update an existing todo (title, assignee, due date, desc
     assignee: z.string().optional().describe("Assignee name, ID, or 'me'"),
     due: z.string().optional().describe("Due date (YYYY-MM-DD, natural language, or 'none' to clear)"),
     description: z.string().optional().describe("Description (Markdown, or 'none' to clear)"),
+    format: formatParam,
   },
-  async ({ id, title, assignee, due, description }) => {
+  async ({ id, title, assignee, due, description, format }) => {
     const args = ["todos", "update", id];
     if (title) args.push("--title", title);
     if (assignee) args.push("--assignee", assignee);
@@ -477,13 +496,14 @@ addTool("update_todo", "Update an existing todo (title, assignee, due date, desc
     else if (due) args.push("--due", due);
     if (description === "none") args.push("--no-description");
     else if (description) args.push("--description", description);
+    pushFormat(args, format);
     return ok(await runBasecamp(args));
   }
 );
 
 addTool("assign_todos",
   "Assign one or more todos in parallel. Each entry specifies its own assignees (comma-separated names or IDs, or 'me') and an optional due date. " +
-  "Returns { succeeded: [id, ...], failed: [{ id, reason }, ...] }.",
+  "Returns { succeeded: [id, ...], failed: [{ id, reason, retryable }, ...] }.",
   {
     assignments: z.array(z.object({
       id: z.string().describe("Todo ID or Basecamp URL"),
@@ -575,13 +595,15 @@ addTool("create_message",
     project: z.string().describe("Project ID or name"),
     subscribe: z.string().optional().describe("Subscribe people (comma-separated names, emails, or IDs)"),
     no_subscribe: z.boolean().optional().describe("Post silently, without notifying anyone"),
+    format: formatParam,
   },
-  async ({ title, body, project, subscribe, no_subscribe }) => {
+  async ({ title, body, project, subscribe, no_subscribe, format }) => {
     const args = ["messages", "create", title];
     if (body) args.push(body);
     args.push("--project", project);
     if (no_subscribe) args.push("--no-subscribe");
     else if (subscribe) args.push("--subscribe", subscribe);
+    pushFormat(args, format);
     return ok(await runBasecamp(args));
   }
 );
@@ -595,13 +617,15 @@ addTool("update_message",
     title: z.string().optional().describe("New subject/title"),
     body: z.string().optional().describe("New body (Markdown and @mentions supported; replaces existing body)"),
     message_board: z.string().optional().describe("Message board ID (required if project has multiple boards)"),
+    format: formatParam,
   },
-  async ({ id, project, title, body, message_board }) => {
+  async ({ id, project, title, body, message_board, format }) => {
     const args = ["messages", "update", id];
     if (project) args.push("--project", project);
     if (title) args.push("--title", title);
     if (body) args.push("--body", body);
     if (message_board) args.push("--message-board", message_board);
+    pushFormat(args, format);
     return ok(await runBasecamp(args));
   }
 );
@@ -657,12 +681,14 @@ addTool("create_card", "Create a new card in a project's card table",
     project: z.string().describe("Project ID or name"),
     body: z.string().optional().describe("Card body/description"),
     column: z.string().optional().describe("Column ID (defaults to first column)"),
+    format: formatParam,
   },
-  async ({ title, project, body, column }) => {
+  async ({ title, project, body, column, format }) => {
     const args = ["cards", "create", title];
     if (body) args.push(body);
     args.push("--project", project);
     if (column) args.push("--column", column);
+    pushFormat(args, format);
     return ok(await runBasecamp(args));
   }
 );
@@ -695,7 +721,7 @@ addTool("move_card", "Move a single card to a different column, or to a differen
 
 addTool("move_cards",
   "Move multiple cards to columns in parallel. Each move specifies a card id and target column. " +
-  "Returns { succeeded: [id, ...], failed: [{ id, reason }, ...] } for partial-success visibility.",
+  "Returns { succeeded: [id, ...], failed: [{ id, reason, retryable }, ...] } for partial-success visibility.",
   {
     moves: z.array(z.object({
       id: z.string().describe("Card ID"),
@@ -731,8 +757,9 @@ addTool("update_card", "Update an existing card (title, body, assignee, due date
     due: z.string().optional().describe("Due date (natural language or YYYY-MM-DD)"),
     project: z.string().optional().describe("Project ID or name"),
     card_table: z.string().optional().describe("Card table ID (required if project has multiple tables)"),
+    format: formatParam,
   },
-  async ({ id, title, body, assignee, due, project, card_table }) => {
+  async ({ id, title, body, assignee, due, project, card_table, format }) => {
     const args = ["cards", "update", id];
     if (title) args.push("--title", title);
     if (body) args.push("--body", body);
@@ -740,6 +767,7 @@ addTool("update_card", "Update an existing card (title, body, assignee, due date
     if (due) args.push("--due", due);
     if (project) args.push("--project", project);
     if (card_table) args.push("--card-table", card_table);
+    pushFormat(args, format);
     return ok(await runBasecamp(args));
   }
 );
@@ -833,11 +861,12 @@ addTool("update_step", "Update a card step (title, assignees, due date)",
   }
 );
 
-addTool("move_step", "Reposition a step within a card (0-indexed)",
+addTool("move_step", "Reposition a step within a card (1-based: 1 is the top)",
   {
     id: z.string().describe("Step ID or Basecamp URL"),
     card: z.string().describe("Card ID or Basecamp URL (required)"),
-    position: z.number().int().describe("Target position (0-indexed)"),
+    // 1-based since CLI v0.12.0 (basecamp-cli#791): the CLI rejects 0, and a 0-based value lands one slot low.
+    position: z.number().int().min(1).describe("Target position (1-based: 1 is the top; a position past the end means last)"),
     project: z.string().optional().describe("Project ID or name"),
     card_table: z.string().optional().describe("Card table ID (required if project has multiple tables)"),
   },
@@ -914,10 +943,12 @@ addTool("add_comment",
     id: z.string().describe("Recording ID (parent item, NOT a comment ID). If you have a URL with a comment fragment, parse the URL first and use the recording_id."),
     content: z.string().describe("Comment text (Markdown and @mentions supported)"),
     project: z.string().optional().describe("Project ID or name"),
+    format: formatParam,
   },
-  async ({ id, content, project }) => {
+  async ({ id, content, project, format }) => {
     const args = ["comments", "create", id, content];
     if (project) args.push("--project", project);
+    pushFormat(args, format);
     return ok(await runBasecamp(args));
   }
 );
@@ -989,8 +1020,9 @@ addTool("create_document",
     draft: z.boolean().optional().describe("Create as draft (default: published)"),
     subscribe: z.string().optional().describe("Subscribe people (comma-separated names, emails, or IDs)"),
     no_subscribe: z.boolean().optional().describe("Create silently, without notifying anyone"),
+    format: formatParam,
   },
-  async ({ title, content, project, folder, draft, subscribe, no_subscribe }) => {
+  async ({ title, content, project, folder, draft, subscribe, no_subscribe, format }) => {
     const args = ["files", "documents", "create", title];
     if (content) args.push(content);
     args.push("--project", project);
@@ -998,6 +1030,7 @@ addTool("create_document",
     if (draft) args.push("--draft");
     if (no_subscribe) args.push("--no-subscribe");
     else if (subscribe) args.push("--subscribe", subscribe);
+    pushFormat(args, format);
     return ok(await runBasecamp(args));
   }
 );
@@ -1011,12 +1044,14 @@ addTool("update_document",
     project: z.string().optional().describe("Project ID or name (required when passing a bare ID)"),
     title: z.string().optional().describe("New title"),
     content: z.string().optional().describe("New body (Markdown supported; replaces existing content)"),
+    format: formatParam,
   },
-  async ({ id, project, title, content }) => {
+  async ({ id, project, title, content, format }) => {
     const args = ["files", "update", id];
     if (project) args.push("--project", project);
     if (title) args.push("--title", title);
     if (content) args.push("--content", content);
+    pushFormat(args, format);
     return ok(await runBasecamp(args));
   }
 );
@@ -1078,13 +1113,15 @@ addTool("replace_upload",
     project: z.string().optional().describe("Project ID or name (required when passing a bare ID)"),
     base_name: z.string().optional().describe("Rename the file, without its extension — omit to keep the uploaded file's name"),
     description: z.string().optional().describe("New description (Markdown) — omit to carry the current one forward, empty string to clear it"),
+    format: formatParam,
   },
-  async ({ id, file, project, base_name, description }) => {
+  async ({ id, file, project, base_name, description, format }) => {
     const args = ["files", "replace", id, file];
     if (project) args.push("--project", project);
     if (base_name) args.push("--base-name", base_name);
     // Distinguish "not given" (carry forward) from an explicit empty string (clear).
     if (description !== undefined) args.push("--description", description);
+    pushFormat(args, format);
     return ok(await runBasecamp(args));
   }
 );
@@ -1130,9 +1167,10 @@ addTool("list_chat_messages",
 );
 
 addTool("post_chat_message",
-  "Post a message to a project's chat. Supports @mentions and Markdown.",
+  "Post a message to a project's Campfire chat. Sent as PLAIN TEXT — Markdown is not rendered, so write the line as you want it read. " +
+  "@mentions are supported and make the CLI send the line as rich text.",
   {
-    message: z.string().describe("Message text (@mentions like [@Name](mention:SGID) and Markdown are supported)"),
+    message: z.string().describe("Message text, plain (Markdown is not rendered; @mentions like [@Name](mention:SGID) are supported)"),
     project: z.string().describe("Project ID or name"),
   },
   async ({ message, project }) =>
@@ -1214,7 +1252,9 @@ addTool("get_overdue_todos",
 
     let matchId = null;
     if (assignee === "me") {
-      const me = JSON.parse(await runBasecamp(["me"]));
+      // Not `basecamp me`: it returns { identity, accounts } — the Launchpad identity, whose id is
+      // not the person id that appears in assignees. `people show me` resolves the account person.
+      const me = JSON.parse(await runBasecamp(["people", "show", "me"]));
       matchId = String((me.data || me).id);
     }
     let projectId = null;
@@ -1255,22 +1295,32 @@ addTool("get_schedule",
 addTool("list_notifications",
   "List your Basecamp notifications. Returns { data: { reads, unreads, bubble_ups_count, scheduled_bubble_ups_count }, page: { has_more } } — a structured inbox, not a flat list. " +
   "bubble_ups_count/scheduled_bubble_ups_count are counts only, not items — use basecamp_run [\"notifications\", \"bubbleups\"] to list them. " +
-  "page.has_more is null (unknown); increment page param to fetch the next page.",
-  { page: z.number().int().optional().describe("Page number (default: 1)") },
+  "Paging covers READ notifications only: unreads are the same on every page, so never page to find more unreads. " +
+  "The server returns at most 100 unreads; when page.unreads_capped is true there may be more unread notifications than listed. " +
+  "page.has_more is null (unknown) for reads; increment page to fetch older read notifications.",
+  { page: z.number().int().optional().describe("Page of READ notifications (default: 1); unreads repeat on every page") },
   async ({ page }) => {
     const args = ["notifications", "list"];
     if (page && page > 1) args.push("--page", String(page));
     const raw = await runBasecamp(args);
     let parsed;
     try { parsed = JSON.parse(raw); } catch { return ok(raw); }
-    parsed.page = { has_more: null, note: "Increment page param to fetch next page" };
+    // Since CLI v0.12.0 (basecamp-cli#799), --page pages reads only and the server caps unreads at
+    // 100. `unreads_capped` is the CLI's own signal; a full list at exactly 100 is a lower bound.
+    const unreadsCapped = parsed.data?.unreads_capped === true;
+    parsed.page = {
+      has_more: null,
+      unreads_capped: unreadsCapped,
+      note: "Increment page for older READ notifications; unreads are identical on every page." +
+        (unreadsCapped ? " Unreads are capped at 100 by the server — more unread notifications may exist than are listed." : ""),
+    };
     return ok(JSON.stringify(parsed, null, 2));
   }
 );
 
 addTool("mark_notifications_read",
   "Mark one or more notifications as read in parallel. " +
-  "Returns { succeeded: [id, ...], failed: [{ id, reason }, ...] }. " +
+  "Returns { succeeded: [id, ...], failed: [{ id, reason, retryable }, ...] }. " +
   "Use page to match the page you listed notifications from (all IDs must be from the same page).",
   {
     ids: z.array(z.string()).min(1).describe("Notification ID(s)"),
@@ -1318,7 +1368,7 @@ addTool("search",
     ),
     all: z.boolean().optional().describe("Fetch all results; sets page.has_more=false (ignored when scopes is set)"),
     limit: z.number().int().optional().describe("Max results"),
-    sort: z.enum(["created_at", "updated_at"]).optional().describe("Sort order (default: relevance)"),
+    sort: z.enum(["relevance", "recency"]).optional().describe("Sort order: 'relevance' (default) or 'recency' (newest first)"),
   },
   async ({ query, scopes, project_ids, all, limit, sort }) => {
     const useDefaultLimit = !scopes && !project_ids?.length && !all && limit == null;
