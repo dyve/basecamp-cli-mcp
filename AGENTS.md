@@ -63,7 +63,7 @@ Wraps `recordings list --type TYPE`. Unlike `search`, it is exhaustive for a giv
 
 ### 4. Bulk operations with partial-success shape
 
-`move_cards`, `complete_todos`, `reopen_todos`, `assign_todos`, and `mark_notifications_read` accept arrays and run in parallel via `Promise.allSettled`. Each returns `{ succeeded: [ids], failed: [{ id, reason }] }`.
+`move_cards`, `complete_todos`, `reopen_todos`, `assign_todos`, and `mark_notifications_read` accept arrays and run in parallel via `Promise.allSettled`. Each returns `{ succeeded: [ids], failed: [{ id, reason, retryable }] }`. `retryable` is the CLI's own classification (see **Errors** below), so an agent can re-run only the transient failures.
 
 `assign_todos` accepts a per-item shape `{ id, assignee_ids[], due_date? }` so each todo can have independent assignees and an optional due date update in one call.
 
@@ -128,7 +128,9 @@ Single file: `src/index.js`. All tools registered with `addTool(name, descriptio
 
 **CLI introspection:** `basecamp <cmd> --agent --help` returns structured JSON with subcommands and flags. Use via `basecamp_run` to discover flags for anything not covered by a specific tool.
 
-**Errors:** the CLI prints its error envelope — `{ ok: false, error, code, meta: { request_id } }` — to **stdout**, not stderr, and exits with the code matching `code`. Tool errors are returned as `Basecamp error [<code>/exit <n>]: <message>`, with a remediation hint and the request ID where available.
+**Rich text:** since CLI v0.12.0 every rich-text field is read as Markdown unless `--format html` is passed — HTML is no longer detected and passed through. The ten tools that send a body or description take an optional `format: "markdown" | "html"`. An agent writing back an HTML body it read from a show tool must pass `format: "html"`, or Markdown syntax inside it is reinterpreted (indented lines become code blocks, `# x` a heading). Chat posts are plain text and take no format.
+
+**Errors:** the CLI prints its error envelope — `{ ok: false, error, code, retryable, meta: { request_id } }` — to **stdout**, not stderr, and exits with the code matching `code`. Tool errors are returned as `Basecamp error [<code>/exit <n>]: <message>`, with a remediation hint and the request ID where available; the label gains `, retryable` when the CLI classifies the failure as transient. `retryable: false` means no known reason a retry would help, not proof the failure is permanent — so it is never printed. (`retryable` is CLI v0.10.0+.)
 
 | Exit | Code | Meaning |
 | ---- | ---- | ------- |
@@ -220,7 +222,7 @@ An audit that does not update the record is not finished. The v0.9.1 audit ran o
 
 Open issues, so these do not live only in a chat log or a changelog entry:
 
-- [#14](https://github.com/dyve/basecamp-cli-mcp/issues/14) — fan-out can now reach Basecamp's own concurrency limit. The keychain race #10 fixed was accidentally throttling it; the ceiling is no longer local. Unbounded in the bulk tools and `search`.
+- [#14](https://github.com/dyve/basecamp-cli-mcp/issues/14) — fan-out can now reach Basecamp's own concurrency limit. The keychain race #10 fixed was accidentally throttling it; the ceiling is no longer local. Unbounded in the bulk tools and `search`. Partly relieved upstream: since CLI v0.12.0 (basecamp-cli#712) the CLI queues for its own limit of 10 concurrent processes instead of failing — a 15-way parallel `search` succeeded 15/15 on v0.13.2 — but it gives up after a shared 10 s wait, so a large enough batch still fails, now as `rate_limit` with `retryable: true`.
 - [#7](https://github.com/dyve/basecamp-cli-mcp/issues/7) — no tool creates an upload, so `replace_upload` has no counterpart. Deliberate under the scope policy, not an oversight.
 - [#8](https://github.com/dyve/basecamp-cli-mcp/issues/8) — standing list of CLI commands reachable only via `basecamp_run`.
 

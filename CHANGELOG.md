@@ -4,6 +4,46 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed (maintenance pass, CLI v0.9.1 → v0.13.2 — full commit range read, every invocation re-verified against live `--help`, parsing tools run end to end, Sandbox for writes)
+
+- **`move_step` was off by one.** Step positions are 1-based since CLI v0.12.0 (basecamp-cli#791: `CardStepsService.Reposition` refuses 0, because bc3 always counted from 1). The tool described itself as "0-indexed", so 0 failed and any other value landed one slot low. Description corrected and the schema enforces `min(1)`. Verified in Sandbox: steps A, B, C; moving C to 1 gives C, A, B; 0 is rejected before the CLI is called.
+- **`get_overdue_todos` with `assignee: "me"` always returned nothing.** It read the caller's id from `basecamp me`, which returns `{ identity, accounts }` — no top-level `id`, so every assignee was compared with `"undefined"`. `identity.id` would not have helped either: it is the Launchpad identity, not the account person that appears in `assignees`. Now uses `people show me`. Verified: 27 items, all assigned to the caller, matching exactly the 27 to-dos in `get_assignments` scope `overdue` (its remaining 13 are cards and card steps, which `reports overdue` does not cover). Possibly older than this range; it was never exercised with `me`.
+- **`search` offered sort values the CLI does not have.** The enum was `created_at | updated_at`; `search --sort` takes `relevance | recency`. Both old values were silently accepted and taken as `recency` — identical result order, verified — so an agent could not get what it asked for and could not tell. Enum is now `relevance | recency`.
+- **`list_notifications` sent agents paging for unreads that paging never returns.** Since CLI v0.12.0 (basecamp-cli#799) `--page` pages READ notifications only, every page repeats the same unreads, and the server caps unreads at 100. The tool's "increment page" note made an agent replay the same 100 unreads indefinitely — and this account sits at the cap. The description now says what paging covers, and `page` carries the CLI's new `unreads_capped` with a note when it is true.
+- **`post_chat_message` claimed Markdown support.** Campfire lines are sent as plain text; only an @mention promotes a line to rich text (`chat post --help`). Description corrected.
+- **`scripts/mcp-call.mjs` truncated piped output at ~64 KB.** `process.exit()` ran straight after `console.log`, and writes to a piped stdout are asynchronous, so any large result (`list_notifications`, `get_overdue_todos`) arrived cut off mid-string when piped while a redirect to a file was complete. It now exits from the callback of an empty write, after every earlier write has flushed, behind a guard so the killed server's exit event cannot report a failure meanwhile.
+
+### Added (CLI v0.13.2)
+
+- **`format: "markdown" | "html"` on the ten tools that send rich text** — `create_todo`, `update_todo`, `create_message`, `update_message`, `create_card`, `update_card`, `add_comment`, `create_document`, `update_document`, `replace_upload`. Since CLI v0.12.0 (basecamp-cli#832) rich text is always read as Markdown unless `--format html` says otherwise; content containing HTML used to be passed through untouched. Verified in Sandbox: an HTML body written back without the flag had indented lines turned into a code block, `*x*` into italics, `# x` into a heading and `1. x` into a list; with `format: "html"` it is stored byte-identical. Omitting `format` keeps the CLI default, so existing calls are unchanged. A title-only `update_document` with `format` set still leaves the body intact.
+- **`retryable` from the CLI's error envelope** (CLI v0.10.0+, basecamp-cli#665). Tool errors gain `, retryable` in their label when the CLI classifies the failure as transient; bulk failures become `{ id, reason, retryable }`. `false` is passed through in the structured shape but never printed, because the CLI defines it as "no known reason a retry would help", not permanence. `collectResults` now uses `describeCliError` instead of its own copy of the stdout/stderr parsing. Verified with a real `not_found` (`false`) and a stub CLI emitting a `rate_limit` envelope (`true`, in both shapes).
+
+### Changed (CLI v0.13.2)
+
+- **Requires Basecamp CLI v0.13.2+** (was v0.9.1). The behaviors this release depends on — 1-based step positions, `--format`, `unreads_capped` — arrived in v0.12.0; v0.13.2 is the version verified against, and v0.13.1/v0.13.2 carry Go standard-library and `golang.org/x/net` security fixes (GO-2026-6617 and others) plus an OAuth fix for fake-IP DNS networks.
+- `@modelcontextprotocol/sdk` 1.30.0 → 1.32.1. The 1.31–1.32 changes (OAuth issuer binding, same-origin HTTP redirects, opt-in `maxToolInputElements`/`expectedResource`) do not touch the stdio transport or `server.tool`. `npm audit fix` cleared five new transitive advisories on the SDK's HTTP-server side (`proxy-addr`, `qs`, `ip-address`), unreachable on stdio; `npm audit` reports 0. `zod` stays on 3.x — the SDK still allows `^3.25 || ^4.0`, and a major bump across every schema is its own change. SDK 2.x exists (2.3.1) and is likewise its own decision.
+
+### Verified correct, not a bug (CLI v0.13.2)
+
+- Every flag every tool sends exists on v0.13.2, checked mechanically with one `--agent --help` dump per invocation; positional arguments unchanged. No tool used anything removed in the range: `timeline --watch` (gone, basecamp-cli#646), `chat delete` (now needs `--force` in machine mode, #654).
+- Response shapes unchanged for every tool that reshapes output: account-wide `todos list` (bucket grouping), `assignments` (priorities/non_priorities), `reports assigned`, `reports overdue` (lateness buckets), `reports schedule` (`assignables`, `schedule_entries`, `recurring_schedule_entry_occurrences`), `timeline` with and without `since`, `notifications list` (one additive field, `unreads_capped`).
+- `search --project` is genuinely applied, not an inherited flag the subcommand ignores (the `reports overdue` trap): 50 hits globally, 0 for one project. A nonexistent project ID also returns 0 with `ok: true` rather than `not_found` — CLI behavior, not ours.
+- Parallel fan-out above the CLI's 10-process limit now queues instead of failing (basecamp-cli#712, v0.12.0): 15-way `search` across 15 projects returned 15/15 in 3.1 s. See [#14](https://github.com/dyve/basecamp-cli-mcp/issues/14) for what is still unbounded.
+- The `BASECAMP_TOKEN` single-flight in `runBasecamp` is kept. Upstream fixed a keyring probe race (basecamp-cli#661) and added a cross-process credential lock (#720), which may make it unnecessary, but that was not re-measured — and AGENTS.md forbids removing it without that.
+- `cards steps` now reads every step past the 100 a card embeds (basecamp-cli#819); `list_steps` passes it through and benefits with no change.
+- Affects `basecamp_run` callers only: a bare group with a stray positional (`cards 12345`) is now a usage error instead of a silent exit-0 help screen (#678), and `comments`/`recordings trash` given a comment link now act on the comment rather than its parent (#813).
+
+### Still not wired up as dedicated tools (CLI v0.13.2)
+
+New in v0.10.0–v0.13.2, reachable via `basecamp_run`, triaged rather than added (scope policy). Tracked with the older entries in [#8](https://github.com/dyve/basecamp-cli-mcp/issues/8).
+
+- `files move <id> --to <folder>` — moves a document, upload or folder within a project, keeping ID, URL and comments. Strongest candidate for a tool.
+- `subtasks list|show|create|update|complete|uncomplete|move|delete` — subtasks on to-dos as well as cards, account-scoped. Overlaps the card-step tools; deciding between extending those and a parallel set is its own change.
+- `messages create|update --category`, `messages update --no-category` — message types by ID or name.
+- `bubble-up add|remove`, `profile` editing, `people clients add|remove|invite|enable|disable`, the to-do list template library and `templates construct --start-date`, the account event feed (`events`, `inbox`, stream tickets).
+- `basecamp mcp` — the CLI's own MCP server (15 domain tools over 247 operations, `--read-only`, `--domains`). Not a command to wrap, but it overlaps this project's purpose; whether this server narrows to what it adds (pagination signal, bulk partial-success, scoped search) is an open question, not a maintenance item.
+- `auth agent connect`, `connect` — agent-identity and connector setup, out of scope for a tool server.
+
 ### Changed
 
 - **Every CLI invocation now uses the canonical flag and command form** ([#6](https://github.com/dyve/basecamp-cli-mcp/issues/6)). 36 uses of `--in` became `--project`, and `create_document` / `update_document` moved off the `docs` command tree onto `files`. AGENTS.md has forbidden aliases since 2026-08-05 on the grounds that they are likelier than group nouns to be removed between versions — the v0.8.0 shortcut removal broke six tools this way — but the rule was documentation-only and unenforced until now. Nothing was broken before this change; it removes a class of breakage rather than fixing one.
