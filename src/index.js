@@ -833,11 +833,12 @@ addTool("update_step", "Update a card step (title, assignees, due date)",
   }
 );
 
-addTool("move_step", "Reposition a step within a card (0-indexed)",
+addTool("move_step", "Reposition a step within a card (1-based: 1 is the top)",
   {
     id: z.string().describe("Step ID or Basecamp URL"),
     card: z.string().describe("Card ID or Basecamp URL (required)"),
-    position: z.number().int().describe("Target position (0-indexed)"),
+    // 1-based since CLI v0.12.0 (basecamp-cli#791): the CLI rejects 0, and a 0-based value lands one slot low.
+    position: z.number().int().min(1).describe("Target position (1-based: 1 is the top; a position past the end means last)"),
     project: z.string().optional().describe("Project ID or name"),
     card_table: z.string().optional().describe("Card table ID (required if project has multiple tables)"),
   },
@@ -1130,9 +1131,10 @@ addTool("list_chat_messages",
 );
 
 addTool("post_chat_message",
-  "Post a message to a project's chat. Supports @mentions and Markdown.",
+  "Post a message to a project's Campfire chat. Sent as PLAIN TEXT — Markdown is not rendered, so write the line as you want it read. " +
+  "@mentions are supported and make the CLI send the line as rich text.",
   {
-    message: z.string().describe("Message text (@mentions like [@Name](mention:SGID) and Markdown are supported)"),
+    message: z.string().describe("Message text, plain (Markdown is not rendered; @mentions like [@Name](mention:SGID) are supported)"),
     project: z.string().describe("Project ID or name"),
   },
   async ({ message, project }) =>
@@ -1214,7 +1216,9 @@ addTool("get_overdue_todos",
 
     let matchId = null;
     if (assignee === "me") {
-      const me = JSON.parse(await runBasecamp(["me"]));
+      // Not `basecamp me`: it returns { identity, accounts } — the Launchpad identity, whose id is
+      // not the person id that appears in assignees. `people show me` resolves the account person.
+      const me = JSON.parse(await runBasecamp(["people", "show", "me"]));
       matchId = String((me.data || me).id);
     }
     let projectId = null;
@@ -1255,15 +1259,25 @@ addTool("get_schedule",
 addTool("list_notifications",
   "List your Basecamp notifications. Returns { data: { reads, unreads, bubble_ups_count, scheduled_bubble_ups_count }, page: { has_more } } — a structured inbox, not a flat list. " +
   "bubble_ups_count/scheduled_bubble_ups_count are counts only, not items — use basecamp_run [\"notifications\", \"bubbleups\"] to list them. " +
-  "page.has_more is null (unknown); increment page param to fetch the next page.",
-  { page: z.number().int().optional().describe("Page number (default: 1)") },
+  "Paging covers READ notifications only: unreads are the same on every page, so never page to find more unreads. " +
+  "The server returns at most 100 unreads; when page.unreads_capped is true there may be more unread notifications than listed. " +
+  "page.has_more is null (unknown) for reads; increment page to fetch older read notifications.",
+  { page: z.number().int().optional().describe("Page of READ notifications (default: 1); unreads repeat on every page") },
   async ({ page }) => {
     const args = ["notifications", "list"];
     if (page && page > 1) args.push("--page", String(page));
     const raw = await runBasecamp(args);
     let parsed;
     try { parsed = JSON.parse(raw); } catch { return ok(raw); }
-    parsed.page = { has_more: null, note: "Increment page param to fetch next page" };
+    // Since CLI v0.12.0 (basecamp-cli#799), --page pages reads only and the server caps unreads at
+    // 100. `unreads_capped` is the CLI's own signal; a full list at exactly 100 is a lower bound.
+    const unreadsCapped = parsed.data?.unreads_capped === true;
+    parsed.page = {
+      has_more: null,
+      unreads_capped: unreadsCapped,
+      note: "Increment page for older READ notifications; unreads are identical on every page." +
+        (unreadsCapped ? " Unreads are capped at 100 by the server — more unread notifications may exist than are listed." : ""),
+    };
     return ok(JSON.stringify(parsed, null, 2));
   }
 );
@@ -1318,7 +1332,7 @@ addTool("search",
     ),
     all: z.boolean().optional().describe("Fetch all results; sets page.has_more=false (ignored when scopes is set)"),
     limit: z.number().int().optional().describe("Max results"),
-    sort: z.enum(["created_at", "updated_at"]).optional().describe("Sort order (default: relevance)"),
+    sort: z.enum(["relevance", "recency"]).optional().describe("Sort order: 'relevance' (default) or 'recency' (newest first)"),
   },
   async ({ query, scopes, project_ids, all, limit, sort }) => {
     const useDefaultLimit = !scopes && !project_ids?.length && !all && limit == null;
