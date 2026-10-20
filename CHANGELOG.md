@@ -4,6 +4,28 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed (maintenance pass, CLI v0.13.2 → v0.14.0 — all 17 commits read, changed invocations re-verified against live `--help`, `list_cards` run live and against a stub)
+
+- **`list_cards` without `column` claimed completeness on a capped listing.** Since CLI v0.14.0 (basecamp-cli#919) `cards list` without `--column` reads at most 100 cards per column — a Done column keeps every card ever finished — and names the columns it cut short in the envelope's `notice`. The tool hard-coded `has_more: false` for that case and `wrapPaginated` dropped `notice`, so an agent was told a truncated board was complete. `has_more` now follows the notice, `all: true` passes `--all` (which lifts the cap), and the description says so. Verified live on a 306-card board with no column over 100 (`has_more: false`, no notice) and with a stub emitting the cut-short notice (`has_more: true`, notice passed through).
+- **Every list tool now passes the CLI's `notice` through as `page.notice`.** It was discarded. The CLI already used it for truncation warnings with totals — `list_projects` with `limit: 2` now says "Showing 2 of 132 results".
+- **`scripts/mcp-call.mjs` printed "server exited (code null) before answering" after a successful answer** when the result took long enough to flush. The exit handler logged before checking the `finished` guard added in the previous pass; exit codes were already correct.
+
+### Changed (CLI v0.14.0)
+
+- **Requires Basecamp CLI v0.14.0+** (was v0.13.2) — the version verified against. Older CLIs still work: they do not cap `cards list`, so they never send the notice.
+
+### Verified correct, not a bug (CLI v0.14.0)
+
+- `post_chat_message`: since basecamp-cli#921 a message that is HTML from end to end is refused without `--content-type`. The tool sends none, and the refusal reaches the agent as `Basecamp error [usage/exit 1]: this message is HTML, which plain text would show as tags` — explicit, nothing posted. Left as is: passing `text/plain` would post the tags, and the description already says chat is plain text.
+- basecamp-cli#916 changes how a numeric `--in`/`--project` resolves (no `/projects.json` walk, IDs canonicalized). Faster for every project-scoped tool; no argument or shape change.
+- basecamp-cli#910 only rewords `cards move --to` help: it accepts any column in the project, on any card table. `move_card(s)` already pass the column through.
+- `basecamp mcp` gained Pings and `update_boost`; [basecamp-cli#895](https://github.com/basecamp/basecamp-cli/issues/895) and [#896](https://github.com/basecamp/basecamp-cli/issues/896) are still open with no response, so the retirement plan's blockers stand.
+
+### Still not wired up as dedicated tools (CLI v0.14.0)
+
+- `pings list|show|start|messages|post|upload` (private conversations, basecamp-cli#913) and `boost update` (#917). Reachable via `basecamp_run`; the gateway covers both.
+- The `connect` agent-connector commits (#850–#852, #877, #879, #914, #915, #918) — out of scope for a tool server.
+
 ### Fixed (maintenance pass, CLI v0.9.1 → v0.13.2 — full commit range read, every invocation re-verified against live `--help`, parsing tools run end to end, Sandbox for writes)
 
 - **`move_step` was off by one.** Step positions are 1-based since CLI v0.12.0 (basecamp-cli#791: `CardStepsService.Reposition` refuses 0, because bc3 always counted from 1). The tool described itself as "0-indexed", so 0 failed and any other value landed one slot low. Description corrected and the schema enforces `min(1)`. Verified in Sandbox: steps A, B, C; moving C to 1 gives C, A, B; 0 is rejected before the CLI is called.

@@ -239,7 +239,9 @@ function parseCardUrl(value) {
 //   limit set, count < limit → false (got fewer than asked)
 //   limit set, count >= limit → true (more likely exist)
 //   no limit → null (CLI default applied; completeness unknown)
-function wrapPaginated(raw, { all = false, limit = null } = {}) {
+//   truncated(notice) given → its verdict on the CLI's notice decides instead
+// The CLI's own notice (e.g. a truncation warning) is passed through as page.notice.
+function wrapPaginated(raw, { all = false, limit = null, truncated = null, next = "increment the page param by 1" } = {}) {
   let parsed;
   try { parsed = JSON.parse(raw); } catch { return raw; }
   let items;
@@ -254,9 +256,12 @@ function wrapPaginated(raw, { all = false, limit = null } = {}) {
     return raw; // non-list (show commands, nested data structures)
   }
   const count = items.length;
+  const notice = parsed.notice || null;
   let has_more;
   if (all || count === 0) {
     has_more = false;
+  } else if (truncated) {
+    has_more = truncated(notice);
   } else if (limit != null) {
     has_more = count >= limit;
   } else {
@@ -268,7 +273,8 @@ function wrapPaginated(raw, { all = false, limit = null } = {}) {
     page: {
       has_more,
       ...(has_more === null && { note: "Results capped at CLI default. Pass all=true to fetch exhaustively." }),
-      ...(has_more === true && { next_page: "increment the page param by 1" }),
+      ...(has_more === true && { next_page: next }),
+      ...(notice && { notice }),
     },
   }, null, 2);
 }
@@ -632,7 +638,7 @@ addTool("update_message",
 
 // ── CARDS (KANBAN) ────────────────────────────────────────────────────────────
 
-addTool("list_cards", "List all active cards in a project's card table. Returns paginated results — check page.has_more.",
+addTool("list_cards", "List active cards in a project's card table. Without column, at most 100 cards per column are returned (page.notice names any column cut short) — pass all=true for every card. Returns paginated results — check page.has_more.",
   {
     project: z.string().describe("Project ID or name"),
     column: z.string().optional().describe("Filter by column ID"),
@@ -645,14 +651,20 @@ addTool("list_cards", "List all active cards in a project's card table. Returns 
     const args = ["cards", "list", "--project", project];
     if (column) args.push("--column", column);
     if (card_table) args.push("--card-table", card_table);
-    // Pagination flags require --column (CLI 0.9.0+): without it, cards are merged across
-    // every column and the CLI already returns everything in one call.
+    // Pagination flags require --column (CLI 0.9.0+). Without it, cards are merged across
+    // every column, capped at 100 per column since CLI 0.14.0 — the CLI names the cut
+    // columns in its notice, so that, not the count, decides has_more. --all lifts the cap.
+    if (all) args.push("--all");
     if (column) {
-      if (all) args.push("--all");
-      else if (limit != null) args.push("--limit", String(limit));
+      if (!all && limit != null) args.push("--limit", String(limit));
       if (page != null) args.push("--page", String(page));
     }
-    return ok(wrapPaginated(await runBasecamp(args), { all: all || !column, limit: column ? limit : null }));
+    if (column) return ok(wrapPaginated(await runBasecamp(args), { all, limit }));
+    return ok(wrapPaginated(await runBasecamp(args), {
+      all,
+      truncated: (n) => Boolean(n),
+      next: "pass all=true, or list the cut columns one at a time with column",
+    }));
   }
 );
 
