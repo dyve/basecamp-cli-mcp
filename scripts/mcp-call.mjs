@@ -122,6 +122,7 @@ child.on("error", (e) => {
 });
 
 child.on("exit", (code) => {
+  if (finished) return; // our own kill, after the answer
   console.error(`server exited (code ${code}) before answering`);
   finish(1);
 });
