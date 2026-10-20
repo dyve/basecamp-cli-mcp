@@ -218,6 +218,18 @@ An audit that does not update the record is not finished. The v0.9.1 audit ran o
 
 ---
 
+## Planned retirement: `basecamp mcp`
+
+Since CLI v0.10.0 the CLI ships its own MCP server (`basecamp mcp`: 17 gateway tools over 276 actions, `--read-only`, `--domains`). It removes the reason this project exists: a gap analysis on CLI v0.13.2 (2026-10-13) found that Claude Desktop can launch it directly — verified by starting `/opt/homebrew/bin/basecamp mcp` with only `HOME`, `USER` and `PATH=/usr/bin:/bin` and making authenticated calls. **Decision: adopt it and retire this server**, once the gaps that make its writes unsafe are fixed upstream:
+
+- [basecamp-cli#895](https://github.com/basecamp/basecamp-cli/issues/895) — `replace_todo` / `replace_document` clear every field left out; a title-only edit wiped a to-do's description, due date and assignees (verified in Sandbox). Blocker.
+- [basecamp-cli#896](https://github.com/basecamp/basecamp-cli/issues/896) — rich text is stored as literal Markdown, no conversion. Blocker for agent-written content.
+- [basecamp-cli#897](https://github.com/basecamp/basecamp-cli/issues/897) — `next_page` never ends and the list shape varies. Not a blocker; agents can stop on an empty page.
+
+Until #895 and #896 close: use `basecamp mcp --read-only` for reads and this server for writes. **This server gets fixes only — no new tools.** New CLI surface (`files move`, `subtasks`, message categories) is already in the gateway; do not wire it up here. Other gaps found, accepted as the cost of adopting: IDs only (no names, URLs or `me`), no local file upload, no bulk partial-success shape, plain-text errors with no `code`/`retryable`, destructive actions (`trash_project`, deletes) sharing a tool — and so a Desktop "always allow" — with reads.
+
+When both blockers close: re-test them in Sandbox, drop `--read-only`, remove this server from the Desktop config, and archive the repo.
+
 ## Known gaps
 
 Open issues, so these do not live only in a chat log or a changelog entry:
