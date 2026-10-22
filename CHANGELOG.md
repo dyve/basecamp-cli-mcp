@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed (maintenance pass, CLI v0.14.0 → v0.16.0 — all 10 commits read, changed paths checked against the v0.16.0 source, live tests in Sandbox)
+
+- **`list_cards` reads the cap from `meta.truncated_columns`, not from the notice.** CLI v0.16.0 (basecamp-cli#933) adds `meta.truncated_columns` — `{ id, title, shown, total }` per column cut short — and makes the notice a diagnostic. Under `--json`, which this server uses, the notice still appears in the envelope, so the v0.14.0 fix was not broken. But any notice at all set `has_more: true`, which would misfire on unrelated warnings, and the agent got prose instead of column IDs. `has_more` now follows `truncated_columns`, `page.truncated_columns` passes it through, and `next_page` says to list those columns by `id` with `column`. Checked against a stub CLI (cut short, `all: true`, unrelated notice only) and live on a 308-card board. No column in this account is over 100 cards, so the real cap could not be triggered live.
+
+### Changed (CLI v0.16.0)
+
+- **Requires Basecamp CLI v0.16.0+** (was v0.14.0), for `meta.truncated_columns`. Without it, `list_cards` reports a capped v0.14/v0.15 listing as complete. v0.15.1 also builds with Go 1.26.10 for GO-2026-6809 (crypto/x509).
+
+### Verified correct, not a bug (CLI v0.16.0)
+
+- **Standalone URLs become embeds** (basecamp-cli#927). In Markdown rich text, a URL alone on its line is now embedded when Basecamp can embed it. URLs inside a sentence, list, quote, table or code, titled links, and anything sent with `format: "html"` are left alone. This applies to every rich-text tool with no change on our side. Verified in Sandbox with `create_todo`: a YouTube URL on its own line became an `embed/youtube-video` attachment, an inline URL stayed a link, and a title-only `update_todo` left the embed intact. Embedding never fails a post; a URL that can't be embedded stays a link.
+- `embeds create|show` are new and reachable via `basecamp_run`. They are only needed for embeds in `format: "html"` content.
+- The other commits are connector, CI and release work (#907, #920, #929, #931).
+- `basecamp mcp`: the gateway gained the embed actions in its files domain. [basecamp-cli#895](https://github.com/basecamp/basecamp-cli/issues/895), [#896](https://github.com/basecamp/basecamp-cli/issues/896) and [#897](https://github.com/basecamp/basecamp-cli/issues/897) are still open with no response, so the retirement blockers stand.
+
 ### Fixed (maintenance pass, CLI v0.13.2 → v0.14.0 — all 17 commits read, changed invocations re-verified against live `--help`, `list_cards` run live and against a stub)
 
 - **`list_cards` without `column` claimed completeness on a capped listing.** Since CLI v0.14.0 (basecamp-cli#919) `cards list` without `--column` reads at most 100 cards per column — a Done column keeps every card ever finished — and names the columns it cut short in the envelope's `notice`. The tool hard-coded `has_more: false` for that case and `wrapPaginated` dropped `notice`, so an agent was told a truncated board was complete. `has_more` now follows the notice, `all: true` passes `--all` (which lifts the cap), and the description says so. Verified live on a 306-card board with no column over 100 (`has_more: false`, no notice) and with a stub emitting the cut-short notice (`has_more: true`, notice passed through).
