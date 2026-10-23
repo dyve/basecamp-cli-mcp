@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed (maintenance pass, CLI v0.16.0 → v0.17.0 — all 4 commits read, changed paths diffed, due dates live-tested in Sandbox)
+
+- **A blank due date silently cleared an existing one.** `todos update --due "   "` removes a to-do's due date and reports success on v0.17.0. basecamp-cli#937 says the shared due-date parser it introduced rejects whitespace-only values; for `todos update` it does not. The tools passed any non-empty string through, so an agent sending `" "` lost the date without an error. All six due-date parameters (`create_todo`, `update_todo`, `assign_todos`, `update_card`, `create_step`, `update_step`) now refuse a blank value at the schema, before any CLI call. Verified: a to-do due 2026-12-24 went to `null` through the old path; with a stub CLI, blank values are refused with no call made, while `none` (→ `--no-due`) and `next friday` pass.
+
+### Changed (CLI v0.17.0)
+
+- README floor set to v0.17.0, the version verified against. v0.16.0 is enough for everything here; v0.17.0 itself adds nothing this server needs.
+
+### Verified correct, not a bug (CLI v0.17.0)
+
+- `update_todo` due dates on the new shared parser (#937): `next friday` → 2026-10-30, `2026-12-24`, and `none` all behave as before, and the description is untouched by each.
+- `cards create --due` is new (#937). `create_card` has no `due` parameter, so a dated card still takes `create_card` then `update_card`. Not added: the retirement plan allows fixes only, and the gateway's `create_card` already takes `due_on`.
+- The other commits are connector (#936), Nix/Ruby (#935) and release work (#938).
+- [basecamp-cli#895](https://github.com/basecamp/basecamp-cli/issues/895), [#896](https://github.com/basecamp/basecamp-cli/issues/896) and [#897](https://github.com/basecamp/basecamp-cli/issues/897) are still open with no response.
+
 ### Fixed (maintenance pass, CLI v0.14.0 → v0.16.0 — all 10 commits read, changed paths checked against the v0.16.0 source, live tests in Sandbox)
 
 - **`list_cards` reads the cap from `meta.truncated_columns`, not from the notice.** CLI v0.16.0 (basecamp-cli#933) adds `meta.truncated_columns` — `{ id, title, shown, total }` per column cut short — and makes the notice a diagnostic. Under `--json`, which this server uses, the notice still appears in the envelope, so the v0.14.0 fix was not broken. But any notice at all set `has_more: true`, which would misfire on unrelated warnings, and the agent got prose instead of column IDs. `has_more` now follows `truncated_columns`, `page.truncated_columns` passes it through, and `next_page` says to list those columns by `id` with `column`. Checked against a stub CLI (cut short, `all: true`, unrelated notice only) and live on a 308-card board. No column in this account is over 100 cards, so the real cap could not be triggered live.
