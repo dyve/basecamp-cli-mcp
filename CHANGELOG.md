@@ -4,6 +4,24 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed (maintenance pass, CLI v0.17.0 → v0.18.0 — all 33 commits read, affected paths live-tested in Sandbox)
+
+- **Card step tools refused `app.basecamp.com` card links.** `list_steps`, `create_step` and `update_step` read a card URL with their own regex, which only knew `3.basecamp.com`. The API's `app_url`, the link an agent is most likely to hold, is `app.basecamp.com`. Such a URL fell through as a bare card ID and failed with `Invalid card ID`. Both hosts are accepted now; the CLI's own parser already took both.
+- **A URL naming an item inside a card resolved to the card.** The regex matched a prefix, so `…/cards/{card}/comments/{id}` acted on the card. CLI v0.18.0 (basecamp-cli#946) stopped resolving such URLs to their parent, and `url parse` now refuses them. The step tools follow the same rule: trailing words (`/edit`, a trailing slash, a `#fragment`) still name the card, while a segment that is another ID is refused with an explicit error before any CLI call. Verified on a live card with seven URL forms.
+
+### Changed (CLI v0.18.0)
+
+- README floor set to v0.18.0, the version verified against. Nothing here requires it.
+
+### Verified correct, not a bug (CLI v0.18.0)
+
+- **Who completed an item, and when** (basecamp-cli#942): `show_todo` now carries `completion`, `completer` and `completed_at` on completed to-dos and cards, where they were `null`. Passed through unchanged; verified in Sandbox.
+- **Stricter URL resolution** (#946, #950): a URL naming another item, or a schedule occurrence URL given to a series action, is refused instead of acting on the parent. URL-taking tools pass URLs to the CLI, so agents get `Basecamp error [usage/exit 1]: Invalid todo ID` rather than a wrong target. `/dates/edit`-style suffixes still resolve. `parse_url` wraps `url parse` and inherits the change.
+- **Rate limiting per request, not per operation** (#909): `search` with 15 `project_ids` returned 15/15 with no warnings in 1.2–2.3 s, against 3.1 s on v0.13.2. [#14](https://github.com/dyve/basecamp-cli-mcp/issues/14) is unchanged.
+- **Credential changes** (#856, #959 and the keyring work, which bounds Linux keyring calls): `auth token` still prints one bare token line on stdout, so the `BASECAMP_TOKEN` single-flight is unaffected. The "Agent skill updated" banner goes to stderr.
+- New, reachable via `basecamp_run` and not added under the retirement plan: `spotlight`/`unspotlight`, `projects wallpaper set|mode|remove`, `auth token --session-id`. `tools trash` now says it deletes or disables, never trashes.
+- [basecamp-cli#895](https://github.com/basecamp/basecamp-cli/issues/895), [#896](https://github.com/basecamp/basecamp-cli/issues/896) and [#897](https://github.com/basecamp/basecamp-cli/issues/897) are still open with no response.
+
 ### Fixed (maintenance pass, CLI v0.16.0 → v0.17.0 — all 4 commits read, changed paths diffed, due dates live-tested in Sandbox)
 
 - **A blank due date silently cleared an existing one.** `todos update --due "   "` removes a to-do's due date and reports success on v0.17.0. basecamp-cli#937 says the shared due-date parser it introduced rejects whitespace-only values; for `todos update` it does not. The tools passed any non-empty string through, so an agent sending `" "` lost the date without an error. All six due-date parameters (`create_todo`, `update_todo`, `assign_todos`, `update_card`, `create_step`, `update_step`) now refuse a blank value at the schema, before any CLI call. Verified: a to-do due 2026-12-24 went to `null` through the old path; with a stub CLI, blank values are refused with no call made, while `none` (→ `--no-due`) and `next friday` pass.
