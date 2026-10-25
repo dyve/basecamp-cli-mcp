@@ -337,6 +337,12 @@ function pushFormat(args, format) {
   if (format) args.push("--format", format);
 }
 
+// A blank due date is refused here: `todos update --due "   "` clears an existing due date and
+// reports success (verified on CLI v0.17.0, whose #937 says such values are rejected — they are not).
+const dueString = z.string().refine((s) => s.trim() !== "", {
+  message: "due date is blank — pass a date (YYYY-MM-DD or natural language), or omit it",
+});
+
 // ── URL PARSING ──────────────────────────────────────────────────────────────
 
 addTool("parse_url",
@@ -452,7 +458,7 @@ addTool("create_todo",
     project: z.string().describe("Project ID or name"),
     list: z.string().optional().describe("Todolist ID or name"),
     assignee: z.string().optional().describe("Assignee name, ID, or 'me'"),
-    due: z.string().optional().describe("Due date: YYYY-MM-DD or natural language like 'next friday', 'tomorrow', '+3'"),
+    due: dueString.optional().describe("Due date: YYYY-MM-DD or natural language like 'next friday', 'tomorrow', '+3'"),
     description: z.string().optional().describe("Extended description (Markdown, @mentions supported)"),
     format: formatParam,
   },
@@ -492,7 +498,7 @@ addTool("update_todo", "Update an existing todo (title, assignee, due date, desc
     id: z.string().describe("Todo ID or Basecamp URL"),
     title: z.string().optional().describe("New title"),
     assignee: z.string().optional().describe("Assignee name, ID, or 'me'"),
-    due: z.string().optional().describe("Due date (YYYY-MM-DD, natural language, or 'none' to clear)"),
+    due: dueString.optional().describe("Due date (YYYY-MM-DD, natural language, or 'none' to clear)"),
     description: z.string().optional().describe("Description (Markdown, or 'none' to clear)"),
     format: formatParam,
   },
@@ -516,7 +522,7 @@ addTool("assign_todos",
     assignments: z.array(z.object({
       id: z.string().describe("Todo ID or Basecamp URL"),
       assignee_ids: z.array(z.string()).min(1).describe("Assignee names, IDs, or 'me'"),
-      due_date: z.string().optional().describe("Due date (YYYY-MM-DD or natural language)"),
+      due_date: dueString.optional().describe("Due date (YYYY-MM-DD or natural language)"),
     })).min(1).describe("Assignments to perform in parallel"),
   },
   async ({ assignments }) => {
@@ -771,7 +777,7 @@ addTool("update_card", "Update an existing card (title, body, assignee, due date
     title: z.string().optional().describe("New title"),
     body: z.string().optional().describe("New body/description"),
     assignee: z.string().optional().describe("Assignee ID or name"),
-    due: z.string().optional().describe("Due date (natural language or YYYY-MM-DD)"),
+    due: dueString.optional().describe("Due date (natural language or YYYY-MM-DD)"),
     project: z.string().optional().describe("Project ID or name"),
     card_table: z.string().optional().describe("Card table ID (required if project has multiple tables)"),
     format: formatParam,
@@ -813,7 +819,7 @@ addTool("create_step", "Add a new step (checklist item) to a card",
     title: z.string().describe("Step title"),
     card: z.string().describe("Card ID or Basecamp URL"),
     assignees: z.string().optional().describe("Assignee IDs or names (comma-separated)"),
-    due: z.string().optional().describe("Due date (natural language or YYYY-MM-DD)"),
+    due: dueString.optional().describe("Due date (natural language or YYYY-MM-DD)"),
     project: z.string().optional().describe("Project ID or name"),
     card_table: z.string().optional().describe("Card table ID (required if project has multiple tables)"),
   },
@@ -863,7 +869,7 @@ addTool("update_step", "Update a card step (title, assignees, due date)",
     id: z.string().describe("Step ID or Basecamp URL"),
     title: z.string().optional().describe("New title"),
     assignees: z.string().optional().describe("Assignee IDs or names (comma-separated)"),
-    due: z.string().optional().describe("Due date (natural language or YYYY-MM-DD)"),
+    due: dueString.optional().describe("Due date (natural language or YYYY-MM-DD)"),
     project: z.string().optional().describe("Project ID or name"),
     card_table: z.string().optional().describe("Card table ID (required if project has multiple tables)"),
   },
