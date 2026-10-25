@@ -225,10 +225,16 @@ function addTool(name, description, schema, handler) {
 // ── HELPERS ───────────────────────────────────────────────────────────────────
 
 // Extracts { projectId, cardId } from a Basecamp card URL, or null if not a URL.
-// URL format: https://3.basecamp.com/{account}/buckets/{project}/card_tables/cards/{card}
+// URL format: https://{3,app}.basecamp.com/{account}/buckets/{project}/card_tables/cards/{card}
+// The API's app_url uses app.basecamp.com. Path segments after the card ID name the card only
+// while they are words (e.g. /edit); one that is another ID (a comment, a step) gives { error },
+// as `url parse` refuses it since CLI v0.18.0 (basecamp-cli#946) — never resolve it to the card.
 function parseCardUrl(value) {
-  const m = value.match(/^https?:\/\/3\.basecamp\.com\/\d+\/buckets\/(\d+)\/card_tables\/cards\/(\d+)/);
+  const m = value.match(/^https?:\/\/(?:3|app)\.basecamp\.com\/\d+\/buckets\/(\d+)\/card_tables\/cards\/(\d+)(?:\.json)?(\/[^?#]*)?/);
   if (!m) return null;
+  if ((m[3] ?? "").split("/").some((seg) => seg && !/^[a-z]/i.test(seg))) {
+    return { error: `${value} names an item inside card ${m[2]}, not the card itself — pass the card's own URL or ID` };
+  }
   return { projectId: m[1], cardId: m[2] };
 }
 
@@ -805,6 +811,7 @@ addTool("list_steps", "List all steps (checklist items) on a card",
   },
   async ({ card, project, card_table }) => {
     const parsed = parseCardUrl(card);
+    if (parsed?.error) return fail(parsed.error);
     const cardId = parsed ? parsed.cardId : card;
     const resolvedProject = project ?? parsed?.projectId;
     const args = ["cards", "steps", cardId];
@@ -825,6 +832,7 @@ addTool("create_step", "Add a new step (checklist item) to a card",
   },
   async ({ title, card, assignees, due, project, card_table }) => {
     const parsed = parseCardUrl(card);
+    if (parsed?.error) return fail(parsed.error);
     const cardId = parsed ? parsed.cardId : card;
     const resolvedProject = project ?? parsed?.projectId;
     const args = ["cards", "step", "create", title, "--card", cardId];
@@ -895,6 +903,7 @@ addTool("move_step", "Reposition a step within a card (1-based: 1 is the top)",
   },
   async ({ id, card, position, project, card_table }) => {
     const parsed = parseCardUrl(card);
+    if (parsed?.error) return fail(parsed.error);
     const cardId = parsed ? parsed.cardId : card;
     const resolvedProject = project ?? parsed?.projectId;
     const args = ["cards", "step", "move", id, "--card", cardId, "--position", String(position)];
