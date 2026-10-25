@@ -38,11 +38,13 @@ These features go beyond (or improve on) what the official `skills/basecamp/SKIL
 
 ### 1. Pagination metadata on every `list_*` response **[PR candidate]**
 
-Every list tool wraps its response in `{ items, count, page: { has_more, [note] } }`.
+Every list tool wraps its response in `{ items, count, page: { has_more, [total], [next_page], [note], [notice] } }`.
 
-- `has_more: false` when `--all` was used or count is less than the limit → safe to claim completeness
-- `has_more: true` when count reached the limit → more exist, increment page
-- `has_more: null` when no limit was specified → adds `note: "Use all=true to fetch exhaustively"`
+- `has_more: false` when `--all` was used, the list is empty, or the CLI's own notice says every item was shown → safe to claim completeness
+- `has_more: true` when the CLI's notice reports a cut ("Showing 20 of 89" also sets `total: 89`), or count reached the limit → more exist; `next_page` says how to get them
+- `has_more: null` when nothing tells → adds a `note` to pass `all=true`
+
+**There is no next page to request.** Since CLI v0.18.0 nearly every list command refuses `--page` above 1, and `--page` together with `--limit`. Measured: only account-wide `todos list` and `notifications list` still page. So `all=true` is the way to the rest, and `page` is offered only by `list_todos` (account-wide), `list_notifications` and `mark_notifications_read`. `search` and `list_chat_messages` have no `--page` at all; chat has no `--all` either, so a larger `limit` is its only way back.
 
 **Why:** an LLM reading a raw list with no `has_more` signal will make false completeness claims ("you have 12 open todos") on a partial page.
 
