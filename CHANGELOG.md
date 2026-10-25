@@ -6,8 +6,12 @@ All notable changes to this project are documented in this file.
 
 ### Fixed (maintenance pass, CLI v0.17.0 → v0.18.0 — all 33 commits read, affected paths live-tested in Sandbox)
 
-- **Card step tools refused `app.basecamp.com` card links.** `list_steps`, `create_step` and `update_step` read a card URL with their own regex, which only knew `3.basecamp.com`. The API's `app_url`, the link an agent is most likely to hold, is `app.basecamp.com`. Such a URL fell through as a bare card ID and failed with `Invalid card ID`. Both hosts are accepted now; the CLI's own parser already took both.
-- **A URL naming an item inside a card resolved to the card.** The regex matched a prefix, so `…/cards/{card}/comments/{id}` acted on the card. CLI v0.18.0 (basecamp-cli#946) stopped resolving such URLs to their parent, and `url parse` now refuses them. The step tools follow the same rule: trailing words (`/edit`, a trailing slash, a `#fragment`) still name the card, while a segment that is another ID is refused with an explicit error before any CLI call. Verified on a live card with seven URL forms.
+- **`delete_step` could trash any recording — a card, a to-do, a document.** `cards step delete` is a generic recording trash (`CardSteps.Delete` → `TrashRecording`) that checks no type. Given a card's ID, it trashed the card and reported `Deleted step #<id>`; verified live in Sandbox. An agent confusing a card ID with a step ID lost the card silently. `delete_step` now reads the recording's type with `show` first and refuses anything but `Kanban::Step`, with nothing deleted. Its description also said "permanently delete", but the step goes to the trash, where it can be restored.
+- **Card URLs in the step tools are resolved by the CLI, not a local regex.** `list_steps`, `create_step` and `move_step` read the `card` URL with a regex that had fallen behind the CLI twice:
+  - It only knew `3.basecamp.com`, so the API's `app_url` (`app.basecamp.com`), the link an agent is most likely to hold, failed with `Invalid card ID`. API (`3.basecampapi.com/….json`) and mixed-case URLs failed the same way.
+  - It matched a prefix, so `…/cards/{card}/comments/{id}` and a `#__recording_` comment link acted on the card, and `cards/123abc` acted on card 123.
+  
+  The tools now call `url parse`, which follows the CLI's host and nesting rules (basecamp-cli#946 refuses nested items since v0.18.0), and accept only a plain card link: `/edit` and similar still resolve, while comment links, nested items and malformed IDs are refused. Verified in Sandbox on nine URL forms, with the URL alone supplying the project.
 
 ### Changed (CLI v0.18.0)
 
