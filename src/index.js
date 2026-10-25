@@ -224,18 +224,19 @@ function addTool(name, description, schema, handler) {
 
 // ── HELPERS ───────────────────────────────────────────────────────────────────
 
-// Extracts { projectId, cardId } from a Basecamp card URL, or null if not a URL.
-// URL format: https://{3,app}.basecamp.com/{account}/buckets/{project}/card_tables/cards/{card}
-// The API's app_url uses app.basecamp.com. Path segments after the card ID name the card only
-// while they are words (e.g. /edit); one that is another ID (a comment, a step) gives { error },
-// as `url parse` refuses it since CLI v0.18.0 (basecamp-cli#946) — never resolve it to the card.
-function parseCardUrl(value) {
-  const m = value.match(/^https?:\/\/(?:3|app)\.basecamp\.com\/\d+\/buckets\/(\d+)\/card_tables\/cards\/(\d+)(?:\.json)?(\/[^?#]*)?/);
-  if (!m) return null;
-  if ((m[3] ?? "").split("/").some((seg) => seg && !/^[a-z]/i.test(seg))) {
-    return { error: `${value} names an item inside card ${m[2]}, not the card itself — pass the card's own URL or ID` };
+// Resolves a card argument to { cardId, projectId }. An ID passes through; a URL goes through the
+// CLI's own `url parse`, so hosts (3./app./basecampapi), case, .json and nested-item rules track the
+// CLI instead of a local regex that fell behind it twice. `cards steps` needs the project, which
+// only the URL supplies. Anything but a plain card link — a comment fragment, an item inside the
+// card (refused by `url parse` since CLI v0.18.0, basecamp-cli#946) — gives { error }: never
+// resolve it to the card.
+async function resolveCard(card) {
+  if (!/^https?:\/\//i.test(card)) return { cardId: card, projectId: null };
+  const { data } = JSON.parse(await runBasecamp(["url", "parse", card]));
+  if (data?.type !== "cards" || data.comment_id || !/^\d+$/.test(data.recording_id ?? "")) {
+    return { error: `${card} is not a link to a card itself — pass the card's own URL or ID` };
   }
-  return { projectId: m[1], cardId: m[2] };
+  return { cardId: data.recording_id, projectId: data.project_id };
 }
 
 // Wraps a CLI JSON list response with pagination metadata.
@@ -810,10 +811,10 @@ addTool("list_steps", "List all steps (checklist items) on a card",
     card_table: z.string().optional().describe("Card table ID (required if project has multiple tables)"),
   },
   async ({ card, project, card_table }) => {
-    const parsed = parseCardUrl(card);
-    if (parsed?.error) return fail(parsed.error);
-    const cardId = parsed ? parsed.cardId : card;
-    const resolvedProject = project ?? parsed?.projectId;
+    const resolved = await resolveCard(card);
+    if (resolved.error) return fail(resolved.error);
+    const { cardId } = resolved;
+    const resolvedProject = project ?? resolved.projectId;
     const args = ["cards", "steps", cardId];
     if (resolvedProject) args.push("--project", resolvedProject);
     if (card_table) args.push("--card-table", card_table);
@@ -831,10 +832,10 @@ addTool("create_step", "Add a new step (checklist item) to a card",
     card_table: z.string().optional().describe("Card table ID (required if project has multiple tables)"),
   },
   async ({ title, card, assignees, due, project, card_table }) => {
-    const parsed = parseCardUrl(card);
-    if (parsed?.error) return fail(parsed.error);
-    const cardId = parsed ? parsed.cardId : card;
-    const resolvedProject = project ?? parsed?.projectId;
+    const resolved = await resolveCard(card);
+    if (resolved.error) return fail(resolved.error);
+    const { cardId } = resolved;
+    const resolvedProject = project ?? resolved.projectId;
     const args = ["cards", "step", "create", title, "--card", cardId];
     if (assignees) args.push("--assignees", assignees);
     if (due) args.push("--due", due);
@@ -902,10 +903,10 @@ addTool("move_step", "Reposition a step within a card (1-based: 1 is the top)",
     card_table: z.string().optional().describe("Card table ID (required if project has multiple tables)"),
   },
   async ({ id, card, position, project, card_table }) => {
-    const parsed = parseCardUrl(card);
-    if (parsed?.error) return fail(parsed.error);
-    const cardId = parsed ? parsed.cardId : card;
-    const resolvedProject = project ?? parsed?.projectId;
+    const resolved = await resolveCard(card);
+    if (resolved.error) return fail(resolved.error);
+    const { cardId } = resolved;
+    const resolvedProject = project ?? resolved.projectId;
     const args = ["cards", "step", "move", id, "--card", cardId, "--position", String(position)];
     if (resolvedProject) args.push("--project", resolvedProject);
     if (card_table) args.push("--card-table", card_table);
@@ -913,13 +914,19 @@ addTool("move_step", "Reposition a step within a card (1-based: 1 is the top)",
   }
 );
 
-addTool("delete_step", "Permanently delete a step from a card",
+addTool("delete_step", "Delete a step from a card (moves it to the trash, restorable from there). Refuses any ID that is not a card step.",
   {
     id: z.string().describe("Step ID or Basecamp URL"),
     project: z.string().optional().describe("Project ID or name"),
     card_table: z.string().optional().describe("Card table ID (required if project has multiple tables)"),
   },
   async ({ id, project, card_table }) => {
+    // `cards step delete` is a generic recording trash (CardSteps.Delete → TrashRecording) and
+    // checks no type, so a card's, to-do's or document's ID would trash that item. Confirm first.
+    const { data } = JSON.parse(await runBasecamp(["show", id]));
+    if (data?.type !== "Kanban::Step") {
+      return fail(`${id} is a ${data?.type ?? "recording of unknown type"}, not a card step — nothing was deleted. List a card's steps with list_steps.`);
+    }
     const args = ["cards", "step", "delete", id];
     if (project) args.push("--project", project);
     if (card_table) args.push("--card-table", card_table);
