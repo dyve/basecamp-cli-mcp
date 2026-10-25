@@ -133,9 +133,10 @@ function authToken() {
   // Single-flight. Without it, N concurrent tool calls would each spawn their own
   // `auth token` process and reproduce the very keychain race this avoids.
   if (!tokenPromise) {
-    tokenPromise = execFileAsync(BASECAMP_BIN, ["auth", "token"], { env: ENV, timeout: 30000 })
+    const p = execFileAsync(BASECAMP_BIN, ["auth", "token"], { env: ENV, timeout: 30000 })
       .then(({ stdout }) => stdout.trim())
-      .catch(e => { tokenPromise = null; throw e; });
+      .catch(e => { if (tokenPromise === p) tokenPromise = null; throw e; });
+    tokenPromise = p;
   }
   return tokenPromise;
 }
@@ -152,16 +153,19 @@ function isAuthFailure(e) {
 // silent empty result for the caller.
 async function runBasecamp(args, { markdown = false, jq = null, lenient = false, retried = false } = {}) {
   const formatFlag = markdown ? "--md" : "--json";
-  const allArgs = jq
-    ? [...args, formatFlag, "--jq", jq]
-    : [...args, formatFlag];
+  // Flags must precede a "--" end-of-flags marker (see withText), or they would be read as text.
+  const end = args.indexOf("--");
+  const flags = jq ? [formatFlag, "--jq", jq] : [formatFlag];
+  const allArgs = end === -1 ? [...args, ...flags] : [...args.slice(0, end), ...flags, ...args.slice(end)];
   // Fetch on demand rather than at startup, so an unauthenticated CLI still lets
   // the server boot and report the problem per-call instead of failing to start.
   // A cached token outlives its expiry on a long-running server; the retry below
   // is what recovers, since `auth token` refreshes when stored creds are near expiry.
   let env = ENV;
+  let usedToken = null;
   try {
-    env = { ...ENV, BASECAMP_TOKEN: await authToken() };
+    usedToken = authToken();
+    env = { ...ENV, BASECAMP_TOKEN: await usedToken };
   } catch {
     // Fall through unauthenticated: the real command produces the actionable
     // error ("Run: basecamp auth login") rather than one about token fetching.
@@ -182,8 +186,12 @@ async function runBasecamp(args, { markdown = false, jq = null, lenient = false,
     // A cached token that has since expired looks exactly like no credentials at
     // all. Drop it and let `auth token` refresh from stored creds, once — a second
     // auth failure is a genuine login problem, not a stale cache.
+    // Compare-and-clear: when a bulk call's N children all fail on the same expired token, only
+    // the first drops it, and the rest retry on that one refresh. Clearing unconditionally made
+    // each start its own `auth token` — N concurrent keychain reads, the race above — and could
+    // throw away a token another call had just fetched.
     if (!retried && isAuthFailure(e) && !process.env.BASECAMP_TOKEN) {
-      tokenPromise = null;
+      if (tokenPromise === usedToken) tokenPromise = null;
       return runBasecamp(args, { markdown, jq, lenient, retried: true });
     }
     if (lenient) {
@@ -197,6 +205,13 @@ async function runBasecamp(args, { markdown = false, jq = null, lenient = false,
     }
     throw e;
   }
+}
+
+// Appends user text as positional arguments after "--", so text that starts with "-" — a Markdown
+// list ("- item"), a "-1" — is not parsed as flags ("unknown shorthand flag"). Empty values are
+// dropped, as an omitted optional positional.
+function withText(args, ...texts) {
+  return [...args, "--", ...texts.filter(t => t != null && t !== "")];
 }
 
 function ok(text) {
@@ -241,14 +256,21 @@ async function resolveCard(card) {
 
 // Wraps a CLI JSON list response with pagination metadata.
 // The CLI envelope is { ok, data: [...], summary } — no native has_more field.
-// has_more logic:
+// has_more logic, first match wins:
 //   all=true or count=0  → false (definitely done)
-//   limit set, count < limit → false (got fewer than asked)
-//   limit set, count >= limit → true (more likely exist)
-//   no limit → null (CLI default applied; completeness unknown)
-//   truncated(envelope) given → decides instead: page fields describing the cut, or null for none
-// The CLI's own notice (e.g. a truncation warning) is passed through as page.notice.
-function wrapPaginated(raw, { all = false, limit = null, truncated = null, next = "increment the page param by 1" } = {}) {
+//   truncated(envelope) given → decides: page fields describing the cut, or null for none
+//   notice "Showing X of Y" → X < Y, and page.total = Y (the CLI knows the total)
+//   notice "more may exist" → true
+//   limit set → count >= limit
+//   otherwise → null (completeness unknown)
+// The CLI's own notice is passed through as page.notice.
+//
+// There is no "next page" to point to: since CLI v0.18.0 nearly every list command refuses
+// --page above 1 and --page with --limit (measured: only account-wide `todos list` and
+// `notifications list` still page). all=true is the way to the rest.
+const NEXT_ALL = "pass all=true to fetch every item (this list cannot be paged)";
+
+function wrapPaginated(raw, { all = false, limit = null, truncated = null, next = NEXT_ALL } = {}) {
   let parsed;
   try { parsed = JSON.parse(raw); } catch { return raw; }
   let items;
@@ -265,11 +287,18 @@ function wrapPaginated(raw, { all = false, limit = null, truncated = null, next 
   const count = items.length;
   const notice = parsed.notice || null;
   const cut = truncated && !all && count > 0 ? truncated(parsed) : null;
+  const shownOf = notice?.match(/Showing (\d+) of (\d+)/);
   let has_more;
+  let total = null;
   if (all || count === 0) {
     has_more = false;
   } else if (truncated) {
     has_more = Boolean(cut);
+  } else if (shownOf) {
+    total = Number(shownOf[2]);
+    has_more = Number(shownOf[1]) < total;
+  } else if (/more may exist/i.test(notice ?? "")) {
+    has_more = true;
   } else if (limit != null) {
     has_more = count >= limit;
   } else {
@@ -280,7 +309,8 @@ function wrapPaginated(raw, { all = false, limit = null, truncated = null, next 
     count,
     page: {
       has_more,
-      ...(has_more === null && { note: "Results capped at CLI default. Pass all=true to fetch exhaustively." }),
+      ...(total != null && { total }),
+      ...(has_more === null && { note: "Completeness unknown: the CLI applied its default cap. Pass all=true to be sure you have everything." }),
       ...(has_more === true && { next_page: next }),
       ...cut,
       ...(notice && { notice }),
@@ -366,13 +396,11 @@ addTool("list_projects",
   {
     all: z.boolean().optional().describe("Fetch all results; sets page.has_more=false"),
     limit: z.number().int().optional().describe("Max results"),
-    page: z.number().int().optional().describe("Page number"),
   },
-  async ({ all, limit, page }) => {
+  async ({ all, limit }) => {
     const args = ["projects", "list"];
     if (all) args.push("--all");
     else if (limit != null) args.push("--limit", String(limit));
-    if (page != null) args.push("--page", String(page));
     // CLI's own no-limit default is "fetch all" (0 = all), not a capped page.
     return ok(wrapPaginated(await runBasecamp(args), { all: all || limit == null, limit }));
   }
@@ -390,6 +418,8 @@ addTool("update_project", "Update a project's name or description",
     description: z.string().optional().describe("New description (shown on the project tile)"),
   },
   async ({ id, name, description }) => {
+    // The CLI reads an empty --description as "no field given", so a clear would silently do nothing.
+    if (description === "") return fail("A project description cannot be cleared through the CLI — pass new text instead. Nothing was changed.");
     const args = ["projects", "update", id];
     if (name) args.push("--name", name);
     if (description) args.push("--description", description);
@@ -404,9 +434,9 @@ addTool("create_project", "Create a new Basecamp project",
     description: z.string().optional().describe("Project description (shown on the project tile)"),
   },
   async ({ name, description }) => {
-    const args = ["projects", "create", name];
+    const args = ["projects", "create"];
     if (description) args.push("--description", description);
-    return ok(await runBasecamp(args));
+    return ok(await runBasecamp(withText(args, name)));
   }
 );
 
@@ -424,9 +454,12 @@ addTool("list_todos",
     overdue: z.boolean().optional().describe("Only show overdue todos"),
     all: z.boolean().optional().describe("Fetch all (no limit); sets page.has_more=false"),
     limit: z.number().int().optional().describe("Max results"),
-    page: z.number().int().optional().describe("Page number (use with limit for manual pagination)"),
+    page: z.number().int().min(1).optional().describe("Page number — account-wide only (no project), and not with limit or all; the CLI refuses --page elsewhere"),
   },
   async ({ project, list, status, assignee, overdue, all, limit, page }) => {
+    if (page != null && (project || limit != null || all)) {
+      return fail("page works only for account-wide todos (no project), without limit or all — the CLI refuses --page otherwise. Pass all=true to get every todo.");
+    }
     const args = ["todos", "list"];
     if (project) args.push("--project", project);
     if (list) args.push("--list", list);
@@ -444,10 +477,19 @@ addTool("list_todos",
     const buckets = Array.isArray(parsed.data) ? parsed.data : [];
     const items = buckets.flatMap(b => Array.isArray(b.todos) ? b.todos : []);
     const count = items.length;
-    const has_more = (all || count === 0) ? false : (limit != null ? count >= limit : null);
+    // The account-wide listing caps at 100 and says so ("more may exist"); --page still works here.
+    const notice = parsed.notice || null;
+    const has_more = (all || count === 0) ? false
+      : /more may exist/i.test(notice ?? "") ? true
+      : (limit != null ? count >= limit : null);
     return ok(JSON.stringify({
       items, count,
-      page: { has_more, ...(has_more === null && { note: "Results capped at CLI default. Pass all=true to fetch exhaustively." }) },
+      page: {
+        has_more,
+        ...(has_more === null && { note: "Completeness unknown: the CLI applied its default cap. Pass all=true to be sure you have everything." }),
+        ...(has_more === true && { next_page: limit != null ? "pass all=true for every todo" : `pass page=${(page ?? 1) + 1}, or all=true for every todo` }),
+        ...(notice && { notice }),
+      },
     }, null, 2));
   }
 );
@@ -470,13 +512,13 @@ addTool("create_todo",
     format: formatParam,
   },
   async ({ content, project, list, assignee, due, description, format }) => {
-    const args = ["todos", "create", content, "--project", project];
+    const args = ["todos", "create", "--project", project];
     if (list) args.push("--list", list);
     if (assignee) args.push("--assignee", assignee);
     if (due) args.push("--due", due);
     if (description) args.push("--description", description);
     pushFormat(args, format);
-    return ok(await runBasecamp(args));
+    return ok(await runBasecamp(withText(args, content)));
   }
 );
 
@@ -550,13 +592,11 @@ addTool("list_todolists",
     project: z.string().describe("Project ID or name"),
     all: z.boolean().optional().describe("Fetch all results; sets page.has_more=false"),
     limit: z.number().int().optional().describe("Max results"),
-    page: z.number().int().optional().describe("Page number"),
   },
-  async ({ project, all, limit, page }) => {
+  async ({ project, all, limit }) => {
     const args = ["todolists", "list", "--project", project];
     if (all) args.push("--all");
     else if (limit != null) args.push("--limit", String(limit));
-    if (page != null) args.push("--page", String(page));
     // CLI's own no-limit default is "fetch all" (0 = all), not a capped page.
     return ok(wrapPaginated(await runBasecamp(args), { all: all || limit == null, limit }));
   }
@@ -585,13 +625,11 @@ addTool("list_messages",
     project: z.string().describe("Project ID or name"),
     all: z.boolean().optional().describe("Fetch all messages; sets page.has_more=false"),
     limit: z.number().int().optional().describe("Max results"),
-    page: z.number().int().optional().describe("Page number"),
   },
-  async ({ project, all, limit, page }) => {
+  async ({ project, all, limit }) => {
     const args = ["messages", "list", "--project", project];
     if (all) args.push("--all");
     else if (limit != null) args.push("--limit", String(limit));
-    if (page != null) args.push("--page", String(page));
     return ok(wrapPaginated(await runBasecamp(args), { all, limit }));
   }
 );
@@ -619,13 +657,11 @@ addTool("create_message",
     format: formatParam,
   },
   async ({ title, body, project, subscribe, no_subscribe, format }) => {
-    const args = ["messages", "create", title];
-    if (body) args.push(body);
-    args.push("--project", project);
+    const args = ["messages", "create", "--project", project];
     if (no_subscribe) args.push("--no-subscribe");
     else if (subscribe) args.push("--subscribe", subscribe);
     pushFormat(args, format);
-    return ok(await runBasecamp(args));
+    return ok(await runBasecamp(withText(args, title, body)));
   }
 );
 
@@ -659,10 +695,13 @@ addTool("list_cards", "List active cards in a project's card table. Without colu
     column: z.string().optional().describe("Filter by column ID"),
     card_table: z.string().optional().describe("Card table ID (required if project has multiple tables)"),
     all: z.boolean().optional().describe("Fetch all cards; sets page.has_more=false"),
-    limit: z.number().int().optional().describe("Max results"),
-    page: z.number().int().optional().describe("Page number"),
+    limit: z.number().int().optional().describe("Max results — only with column"),
   },
-  async ({ project, column, card_table, all, limit, page }) => {
+  async ({ project, column, card_table, all, limit }) => {
+    // The CLI refuses --limit without --column; dropping it silently returned every card.
+    if (limit != null && !column) {
+      return fail("limit needs column — without it the listing covers every column, at most 100 cards each. Pass column, or all=true for every card.");
+    }
     const args = ["cards", "list", "--project", project];
     if (column) args.push("--column", column);
     if (card_table) args.push("--card-table", card_table);
@@ -671,10 +710,7 @@ addTool("list_cards", "List active cards in a project's card table. Without colu
     // columns in meta.truncated_columns (CLI 0.16.0+), so that, not the count, decides
     // has_more. --all lifts the cap.
     if (all) args.push("--all");
-    if (column) {
-      if (!all && limit != null) args.push("--limit", String(limit));
-      if (page != null) args.push("--page", String(page));
-    }
+    if (column && !all && limit != null) args.push("--limit", String(limit));
     if (column) return ok(wrapPaginated(await runBasecamp(args), { all, limit }));
     return ok(wrapPaginated(await runBasecamp(args), {
       all,
@@ -714,12 +750,10 @@ addTool("create_card", "Create a new card in a project's card table",
     format: formatParam,
   },
   async ({ title, project, body, column, format }) => {
-    const args = ["cards", "create", title];
-    if (body) args.push(body);
-    args.push("--project", project);
+    const args = ["cards", "create", "--project", project];
     if (column) args.push("--column", column);
     pushFormat(args, format);
-    return ok(await runBasecamp(args));
+    return ok(await runBasecamp(withText(args, title, body)));
   }
 );
 
@@ -836,12 +870,12 @@ addTool("create_step", "Add a new step (checklist item) to a card",
     if (resolved.error) return fail(resolved.error);
     const { cardId } = resolved;
     const resolvedProject = project ?? resolved.projectId;
-    const args = ["cards", "step", "create", title, "--card", cardId];
+    const args = ["cards", "step", "create", "--card", cardId];
     if (assignees) args.push("--assignees", assignees);
     if (due) args.push("--due", due);
     if (resolvedProject) args.push("--project", resolvedProject);
     if (card_table) args.push("--card-table", card_table);
-    return ok(await runBasecamp(args));
+    return ok(await runBasecamp(withText(args, title)));
   }
 );
 
@@ -883,13 +917,12 @@ addTool("update_step", "Update a card step (title, assignees, due date)",
     card_table: z.string().optional().describe("Card table ID (required if project has multiple tables)"),
   },
   async ({ id, title, assignees, due, project, card_table }) => {
-    const args = ["cards", "step", "update", id];
-    if (title) args.push(title);
+    const args = ["cards", "step", "update"];
     if (assignees) args.push("--assignees", assignees);
     if (due) args.push("--due", due);
     if (project) args.push("--project", project);
     if (card_table) args.push("--card-table", card_table);
-    return ok(await runBasecamp(args));
+    return ok(await runBasecamp(withText(args, id, title)));
   }
 );
 
@@ -942,14 +975,12 @@ addTool("list_comments", "List comments on a Basecamp recording (todo, message, 
     project: z.string().optional().describe("Project ID or name"),
     all: z.boolean().optional().describe("Fetch all comments; sets page.has_more=false"),
     limit: z.number().int().optional().describe("Max results"),
-    page: z.number().int().optional().describe("Page number"),
   },
-  async ({ id, project, all, limit, page }) => {
+  async ({ id, project, all, limit }) => {
     const args = ["comments", "list", id];
     if (project) args.push("--project", project);
     if (all) args.push("--all");
     else if (limit != null) args.push("--limit", String(limit));
-    if (page != null) args.push("--page", String(page));
     const raw = await runBasecamp(args);
     try {
       const envelope = JSON.parse(raw);
@@ -985,10 +1016,10 @@ addTool("add_comment",
     format: formatParam,
   },
   async ({ id, content, project, format }) => {
-    const args = ["comments", "create", id, content];
+    const args = ["comments", "create"];
     if (project) args.push("--project", project);
     pushFormat(args, format);
-    return ok(await runBasecamp(args));
+    return ok(await runBasecamp(withText(args, id, content)));
   }
 );
 
@@ -1035,14 +1066,12 @@ addTool("list_documents",
     folder: z.string().optional().describe("Folder (vault) ID — omit for project root"),
     all: z.boolean().optional().describe("Fetch all documents; sets page.has_more=false"),
     limit: z.number().int().optional().describe("Max results"),
-    page: z.number().int().optional().describe("Page number"),
   },
-  async ({ project, folder, all, limit, page }) => {
+  async ({ project, folder, all, limit }) => {
     const args = ["files", "documents", "list", "--project", project];
     if (folder) args.push("--vault", folder);
     if (all) args.push("--all");
     else if (limit != null) args.push("--limit", String(limit));
-    if (page != null) args.push("--page", String(page));
     // CLI's own no-limit default is "fetch all" (0 = all), not a capped page.
     return ok(wrapPaginated(await runBasecamp(args), { all: all || limit == null, limit }));
   }
@@ -1062,15 +1091,13 @@ addTool("create_document",
     format: formatParam,
   },
   async ({ title, content, project, folder, draft, subscribe, no_subscribe, format }) => {
-    const args = ["files", "documents", "create", title];
-    if (content) args.push(content);
-    args.push("--project", project);
+    const args = ["files", "documents", "create", "--project", project];
     if (folder) args.push("--vault", folder);
     if (draft) args.push("--draft");
     if (no_subscribe) args.push("--no-subscribe");
     else if (subscribe) args.push("--subscribe", subscribe);
     pushFormat(args, format);
-    return ok(await runBasecamp(args));
+    return ok(await runBasecamp(withText(args, title, content)));
   }
 );
 
@@ -1104,14 +1131,12 @@ addTool("list_uploads",
     folder: z.string().optional().describe("Folder (vault) ID — omit for project root"),
     all: z.boolean().optional().describe("Fetch all uploads; sets page.has_more=false"),
     limit: z.number().int().optional().describe("Max results"),
-    page: z.number().int().optional().describe("Page number"),
   },
-  async ({ project, folder, all, limit, page }) => {
+  async ({ project, folder, all, limit }) => {
     const args = ["files", "uploads", "list", "--project", project];
     if (folder) args.push("--vault", folder);
     if (all) args.push("--all");
     else if (limit != null) args.push("--limit", String(limit));
-    if (page != null) args.push("--page", String(page));
     // CLI's own no-limit default is "fetch all" (0 = all), not a capped page.
     return ok(wrapPaginated(await runBasecamp(args), { all: all || limit == null, limit }));
   }
@@ -1127,14 +1152,12 @@ addTool("list_upload_versions",
     project: z.string().optional().describe("Project ID or name (required when passing a bare ID)"),
     all: z.boolean().optional().describe("Fetch all versions; sets page.has_more=false"),
     limit: z.number().int().optional().describe("Max results"),
-    page: z.number().int().optional().describe("Page number"),
   },
-  async ({ id, project, all, limit, page }) => {
+  async ({ id, project, all, limit }) => {
     const args = ["files", "versions", id];
     if (project) args.push("--project", project);
     if (all) args.push("--all");
     else if (limit != null) args.push("--limit", String(limit));
-    if (page != null) args.push("--page", String(page));
     // CLI's own no-limit default is "fetch all" (0 = all), not a capped page.
     return ok(wrapPaginated(await runBasecamp(args), { all: all || limit == null, limit }));
   }
@@ -1174,14 +1197,13 @@ addTool("list_schedule_entries",
     project: z.string().describe("Project ID or name"),
     all: z.boolean().optional().describe("Fetch all results; sets page.has_more=false"),
     limit: z.number().int().optional().describe("Max results"),
-    page: z.number().int().optional().describe("Page number"),
   },
-  async ({ project, all, limit, page }) => {
+  async ({ project, all, limit }) => {
     const args = ["schedule", "entries", "--project", project];
     if (all) args.push("--all");
     else if (limit != null) args.push("--limit", String(limit));
-    if (page != null) args.push("--page", String(page));
-    return ok(wrapPaginated(await runBasecamp(args), { all, limit }));
+    // `schedule entries` fetches everything unless limited (--limit "0 = all").
+    return ok(wrapPaginated(await runBasecamp(args), { all: all || limit == null, limit }));
   }
 );
 
@@ -1190,8 +1212,8 @@ addTool("list_schedule_entries",
 addTool("list_chat_messages",
   "List recent messages in a project's Campfire CHAT (real-time, no subject/title). NOT message board posts. " +
   "For structured message board posts with subjects, use list_messages. " +
-  "Returns paginated results — check page.has_more. " +
-  "Note: all=true is not supported by the CLI for chat; use limit to control page size (default 25).",
+  "Returns the newest messages — check page.has_more. " +
+  "Chat cannot be paged and has no all=true: raise limit (default 25) to reach older messages.",
   {
     project: z.string().describe("Project ID or name"),
     limit: z.number().int().optional().describe("Max results (default 25; all=true not available for chat)"),
@@ -1201,7 +1223,11 @@ addTool("list_chat_messages",
     const args = ["chat", "messages", "--project", project];
     if (limit != null) args.push("--limit", String(limit));
     if (room) args.push("--room", room);
-    return ok(wrapPaginated(await runBasecamp(args), { limit }));
+    // No --page and no --all for chat: a larger limit is the only way back. 25 is the CLI default.
+    return ok(wrapPaginated(await runBasecamp(args), {
+      limit: limit ?? 25,
+      next: "raise limit to reach older messages (chat has no paging and no all)",
+    }));
   }
 );
 
@@ -1213,7 +1239,7 @@ addTool("post_chat_message",
     project: z.string().describe("Project ID or name"),
   },
   async ({ message, project }) =>
-    ok(await runBasecamp(["chat", "post", message, "--project", project]))
+    ok(await runBasecamp(withText(["chat", "post", "--project", project], message)))
 );
 
 // ── ASSIGNMENTS & REPORTS ─────────────────────────────────────────────────────
@@ -1273,7 +1299,7 @@ addTool("get_overdue_todos",
   "'under_a_week_late', 'over_a_week_late', 'over_a_month_late', or 'over_three_months_late'.",
   {
     project: z.string().optional().describe("Project ID or name"),
-    assignee: z.string().optional().describe("Filter by assignee: name, ID, or 'me'"),
+    assignee: z.string().optional().describe("Filter by assignee: person ID, full name, email, or 'me' (an ambiguous name is an error)"),
   },
   async ({ project, assignee }) => {
     // NOTE: `reports overdue` has no server-side --project filter (it's only an inherited
@@ -1289,12 +1315,17 @@ addTool("get_overdue_todos",
       }
     }
 
+    // Match on a person ID only. A name is resolved by `people show`, which reports an ambiguous
+    // or unknown name as an error — substring matching made "Jan" also match "Marjan".
+    // Not `basecamp me` for "me": it returns { identity, accounts } — the Launchpad identity, whose
+    // id is not the person id that appears in assignees. `people show me` resolves the account person.
     let matchId = null;
-    if (assignee === "me") {
-      // Not `basecamp me`: it returns { identity, accounts } — the Launchpad identity, whose id is
-      // not the person id that appears in assignees. `people show me` resolves the account person.
-      const me = JSON.parse(await runBasecamp(["people", "show", "me"]));
-      matchId = String((me.data || me).id);
+    if (assignee) {
+      if (/^\d+$/.test(assignee)) matchId = assignee;
+      else {
+        const person = JSON.parse(await runBasecamp(["people", "show", assignee]));
+        matchId = String((person.data || person).id);
+      }
     }
     let projectId = null;
     if (project) [projectId] = await resolveProjectIds([project]);
@@ -1306,14 +1337,7 @@ addTool("get_overdue_todos",
       if (!Array.isArray(todos)) { filtered[key] = todos; continue; }
       filtered[key] = todos.filter(t =>
         (!project || String(t.bucket?.id) === projectId || (t.bucket?.name || "").toLowerCase() === String(project).toLowerCase()) &&
-        (!assignee || (t.assignees || []).some(a =>
-          (matchId && String(a.id) === matchId) ||
-          (!matchId && (
-            String(a.id) === String(assignee) ||
-            (a.name || "").toLowerCase().includes(assignee.toLowerCase()) ||
-            a.email_address === assignee
-          ))
-        ))
+        (!matchId || (t.assignees || []).some(a => String(a.id) === matchId))
       );
     }
     const items = flattenGroupedResponse(filtered, "lateness");
@@ -1377,127 +1401,83 @@ addTool("mark_notifications_read",
 
 // ── SEARCH ───────────────────────────────────────────────────────────────────
 
-// Maps Basecamp API type strings to our scope enum values.
-const SCOPE_TYPE_MAP = {
-  "Todo": "todo",
-  "Message": "message",
-  "Comment": "comment",
-  "Kanban::Card": "card",
-  "Document": "document",
-  "Upload": "upload",
-};
-
-const VALID_SEARCH_TYPES = new Set(Object.keys(SCOPE_TYPE_MAP));
-
 addTool("search",
   "Full-text search across Basecamp content. " +
   "WARNING: bare search with no scopes or project_ids runs a global API call that is slow and may timeout — " +
   "always narrow with at least one of: scopes (content types), project_ids, or an explicit limit. " +
   "Prefer browse_content when the content type is known — it is exhaustive and faster. " +
-  "Without scopes: returns paginated results — check page.has_more. " +
-  "With scopes: returns { scopes_searched, hits_by_scope, warnings } grouped by content type. " +
-  "With project_ids: runs one search per project in parallel and merges results; per-project failures appear in warnings.",
+  "Without scopes: returns { items, count, page } — check page.has_more. " +
+  "With scopes: returns { scopes_searched, hits_by_scope, page, warnings }, one CLI search per scope, so each scope gets its own limit. " +
+  "With project_ids: runs one search per project in parallel and merges results; per-project failures appear in warnings. " +
+  "Each search is capped at limit (default 20); page.truncated names every search that had more, with its total.",
   {
     query: z.string().describe("Search query"),
     scopes: z.array(z.enum(["todo","message","comment","card","document","upload"]))
-      .optional().describe("Content types to search. When provided, returns hits grouped by type instead of a flat list."),
+      .optional().describe("Content types to search, each filtered by the CLI. Returns hits grouped by type instead of a flat list."),
     project_ids: z.array(z.string()).optional().describe(
       "Limit search to these project IDs or names. Runs one search per project and merges results. " +
       "Failed projects are reported in warnings rather than aborting the whole search."
     ),
-    all: z.boolean().optional().describe("Fetch all results; sets page.has_more=false (ignored when scopes is set)"),
-    limit: z.number().int().optional().describe("Max results"),
+    all: z.boolean().optional().describe("Fetch all results; sets page.has_more=false"),
+    limit: z.number().int().optional().describe("Max results per search (default 20)"),
     sort: z.enum(["relevance", "recency"]).optional().describe("Sort order: 'relevance' (default) or 'recency' (newest first)"),
   },
   async ({ query, scopes, project_ids, all, limit, sort }) => {
-    const useDefaultLimit = !scopes && !project_ids?.length && !all && limit == null;
-    const buildArgs = (projectId) => {
-      const args = ["search", query];
-      if (projectId) args.push("--project", projectId);
+    // An empty project_ids means no project filter, not one search with a null target.
+    const projects = project_ids?.length ? project_ids : null;
+    const targets = projects ? await resolveProjectIds(projects) : [null];
+    // The CLI caps every search at 20 unless told otherwise; its notice ("Showing 20 of 89")
+    // is what tells a complete result from a cut one, so wrapPaginated reads has_more from it.
+    const runs = (scopes ?? [null]).flatMap(scope => targets.map((pid, i) => ({ scope, pid, label: projects?.[i] ?? null })));
+    const settled = await Promise.allSettled(runs.map(({ scope, pid }) => {
+      const args = ["search"];
+      if (pid) args.push("--project", pid);
+      if (scope) args.push("--type", scope);
       if (all) args.push("--all");
       else if (limit != null) args.push("--limit", String(limit));
-      else if (useDefaultLimit) args.push("--limit", "20");
       if (sort) args.push("--sort", sort);
-      return args;
+      return runBasecamp(withText(args, query));
+    }));
+
+    const warnings = [];
+    const truncated = [];
+    const results = runs.map((run, i) => {
+      const r = settled[i];
+      const where = [run.scope && `scope '${run.scope}'`, run.label && `project '${run.label}'`].filter(Boolean).join(" in ") || "search";
+      if (r.status === "rejected") {
+        warnings.push(`${where} failed: ${formatCliError(r.reason)}`);
+        return { ...run, items: [] };
+      }
+      const wrapped = JSON.parse(wrapPaginated(r.value, { all, limit: limit ?? 20 }));
+      const items = Array.isArray(wrapped.items) ? wrapped.items : [];
+      if (wrapped.page?.has_more) {
+        truncated.push({
+          ...(run.scope && { scope: run.scope }),
+          ...(run.label && { project: run.label }),
+          shown: items.length,
+          ...(wrapped.page.total != null && { total: wrapped.page.total }),
+        });
+      }
+      return { ...run, items };
+    });
+
+    const page = {
+      has_more: truncated.length > 0,
+      ...(truncated.length && { truncated, next_page: "pass all=true, raise limit, or narrow the query" }),
+      ...(!scopes && !projects && !all && limit == null && {
+        note: "Unscoped search is capped at 20 results. Add scopes, project_ids, or an explicit limit to control.",
+      }),
     };
 
-    const targets = project_ids?.length
-      ? await resolveProjectIds(project_ids)
-      : [null];
-    const displayTargets = project_ids ?? [null];
-
     if (!scopes) {
-      // Single global search (no project filter): use non-lenient mode so errors surface.
-      if (targets.length === 1 && !project_ids) {
-        try {
-          const raw = await runBasecamp(buildArgs(null));
-          const effectiveLimit = limit ?? (useDefaultLimit ? 20 : null);
-          const wrapped = JSON.parse(wrapPaginated(raw, { all, limit: effectiveLimit }));
-          if (Array.isArray(wrapped.items)) {
-            wrapped.items = wrapped.items.filter(item => item.type && VALID_SEARCH_TYPES.has(item.type));
-            wrapped.count = wrapped.items.length;
-          }
-          if (useDefaultLimit && wrapped.page) {
-            wrapped.page.note = "Unscoped search capped at 20 results to avoid timeout. Add scopes, project_ids, or an explicit limit to control.";
-          }
-
-          return ok(JSON.stringify(wrapped, null, 2));
-        } catch (e) {
-          const reason = formatCliError(e);
-          return ok(JSON.stringify({ items: [], count: 0, page: { has_more: false }, warnings: [`search failed: ${reason}`] }, null, 2));
-        }
-      }
-
-      // Multi-project flat mode: run in parallel, merge items, report per-project failures.
-      const settled = await Promise.allSettled(targets.map(pid => runBasecamp(buildArgs(pid), { lenient: true })));
-      const warnings = [];
-      const allItems = [];
-      for (let i = 0; i < settled.length; i++) {
-        const r = settled[i];
-        if (r.status === "fulfilled") {
-          let parsed;
-          try { parsed = JSON.parse(r.value); } catch { continue; }
-          const items = Array.isArray(parsed.data) ? parsed.data : Array.isArray(parsed) ? parsed : [];
-          allItems.push(...items.filter(item => item.type && VALID_SEARCH_TYPES.has(item.type)));
-        } else {
-          const pid = displayTargets[i];
-          warnings.push(`search in project '${pid}' failed: ${formatCliError(r.reason)}`);
-        }
-      }
-      const result = { items: allItems, count: allItems.length, page: { has_more: false } };
-      if (warnings.length) result.warnings = warnings;
-      return ok(JSON.stringify(result, null, 2));
+      const items = results.flatMap(r => r.items);
+      return ok(JSON.stringify({ items, count: items.length, page, ...(warnings.length && { warnings }) }, null, 2));
     }
-
-    // Scoped mode: run searches in parallel, group results by type.
-    const settled = await Promise.allSettled(targets.map(pid => runBasecamp(buildArgs(pid), { lenient: true })));
-    const warnings = [];
-    const hits_by_scope = Object.fromEntries(scopes.map(s => [s, []]));
-    let anySearched = false;
-
-    for (let i = 0; i < settled.length; i++) {
-      const r = settled[i];
-      if (r.status === "fulfilled") {
-        anySearched = true;
-        let parsed;
-        try { parsed = JSON.parse(r.value); } catch { continue; }
-        const items = Array.isArray(parsed.data) ? parsed.data : Array.isArray(parsed) ? parsed : [];
-        for (const item of items) {
-          const scope = SCOPE_TYPE_MAP[item.type];
-          if (scope && hits_by_scope[scope] !== undefined) {
-            hits_by_scope[scope].push(item);
-          }
-        }
-      } else {
-        const pid = displayTargets[i];
-        const reason = formatCliError(r.reason);
-        warnings.push(pid ? `search in project '${pid}' failed: ${reason}` : `search failed: ${reason}`);
-      }
-    }
-
+    const hits_by_scope = Object.fromEntries(scopes.map(scope => [scope, results.filter(r => r.scope === scope).flatMap(r => r.items)]));
     return ok(JSON.stringify({
-      scopes_searched: anySearched ? scopes : [],
+      scopes_searched: settled.some(r => r.status === "fulfilled") ? scopes : [],
       hits_by_scope,
+      page,
       warnings,
     }, null, 2));
   }
@@ -1517,16 +1497,14 @@ addTool("browse_content",
     project: z.string().optional().describe("Project ID or name (omit for all projects)"),
     all: z.boolean().optional().describe("Fetch all results; sets page.has_more=false"),
     limit: z.number().int().optional().describe("Max results"),
-    page: z.number().int().optional().describe("Page number"),
     sort: z.enum(["updated_at", "created_at"]).optional().describe("Sort field (default: updated_at)"),
     status: z.enum(["active", "trashed", "archived"]).optional().describe("Status filter (default: active)"),
   },
-  async ({ type, project, all, limit, page, sort, status }) => {
+  async ({ type, project, all, limit, sort, status }) => {
     const args = ["recordings", "list", "--type", type];
     if (project) args.push("--project", project);
     if (all) args.push("--all");
     else if (limit != null) args.push("--limit", String(limit));
-    if (page != null) args.push("--page", String(page));
     if (sort) args.push("--sort", sort);
     if (status) args.push("--status", status);
     return ok(wrapPaginated(await runBasecamp(args), { all, limit }));
@@ -1545,14 +1523,13 @@ addTool("get_timeline",
     person: z.string().optional().describe("Person ID (filter to their activity)"),
     me: z.boolean().optional().describe("Show only your own activity"),
     limit: z.number().int().optional().describe("Max results (default: 100)"),
-    page: z.number().int().optional().describe("Page number (use with limit for manual pagination)"),
     all: z.boolean().optional().describe("Fetch all events (may be slow on large accounts)"),
     since: z.string().optional().describe(
       "ISO 8601 timestamp — return only events at or after this time. " +
       "Respects limit (default: all matching events). Use all=true to force exhaustive fetch."
     ),
   },
-  async ({ project, person, me, limit, page, all, since }) => {
+  async ({ project, person, me, limit, all, since }) => {
     const baseArgs = me ? ["timeline", "me"] : ["timeline"];
     if (project) baseArgs.push("--project", project);
     if (person) baseArgs.push("--person", person);
@@ -1560,59 +1537,43 @@ addTool("get_timeline",
     if (!since) {
       if (all) baseArgs.push("--all");
       else if (limit != null) baseArgs.push("--limit", String(limit));
-      if (page != null) baseArgs.push("--page", String(page));
       return ok(wrapPaginated(await runBasecamp(baseArgs), { all, limit }));
     }
 
-    // since mode: paginate sequentially (newest-first), collect events >= since.
-    // First page omits --page to match the CLI default view (avoids off-by-one with --page 1).
-    // Subsequent pages use --page N. Stop when a page is partial (<100 items), contains
-    // items older than since (hitOlder), or limit is reached (hitLimit).
+    // since mode. The CLI has no since filter for timeline and refuses --page above 1 (CLI v0.18.0),
+    // so widen the window instead: fetch the newest 100, 500, 2500, then everything, until the
+    // oldest event fetched predates since or the timeline runs out. Events are newest-first.
     const sinceDate = new Date(since);
+    if (Number.isNaN(sinceDate.getTime())) {
+      return fail(`since "${since}" is not a timestamp — pass ISO 8601, e.g. 2026-10-01 or 2026-10-01T09:00:00Z`);
+    }
     const collected = [];
     const warnings = [];
-    let currentPage = 1;
     let hitLimit = false;
     let truncated = false;
 
-    outer: while (true) {
-      const pageArgs = currentPage === 1
-        ? [...baseArgs, "--limit", "100"]
-        : [...baseArgs, "--limit", "100", "--page", String(currentPage)];
-      let raw;
-      try {
-        raw = await runBasecamp(pageArgs, { lenient: true });
-      } catch (e) {
-        // A failed page stops the walk with whatever was collected so far. Say so rather than
-        // returning a short list that looks complete.
-        warnings.push(`timeline page ${currentPage} failed: ${formatCliError(e)}`);
-        truncated = true;
-        break;
-      }
+    for (const window of [100, 500, 2500, "all"]) {
+      const windowArgs = window === "all" ? [...baseArgs, "--all"] : [...baseArgs, "--limit", String(window)];
       let parsed;
       try {
-        parsed = JSON.parse(raw);
-      } catch {
-        warnings.push(`timeline page ${currentPage} returned unparseable output`);
+        parsed = JSON.parse(await runBasecamp(windowArgs));
+      } catch (e) {
+        // A failed fetch stops with whatever the previous window held. Say so rather than
+        // returning a short list that looks complete.
+        warnings.push(`timeline fetch of ${window} events failed: ${e instanceof SyntaxError ? "unparseable output" : formatCliError(e)}`);
         truncated = true;
         break;
       }
       const items = Array.isArray(parsed.data) ? parsed.data : Array.isArray(parsed) ? parsed : [];
-      if (!items.length) break;
-      let hitOlder = false;
+      collected.length = 0;
       for (const item of items) {
-        if (new Date(item.created_at) >= sinceDate) {
-          collected.push(item);
-          if (!all && limit != null && collected.length >= limit) {
-            hitLimit = true;
-            break outer;
-          }
-        } else {
-          hitOlder = true;
-        }
+        if (new Date(item.created_at) < sinceDate) continue;
+        collected.push(item);
+        if (!all && limit != null && collected.length >= limit) { hitLimit = true; break; }
       }
-      if (hitOlder || items.length < 100) break;
-      currentPage++;
+      const reachedSince = items.length && new Date(items[items.length - 1].created_at) < sinceDate;
+      const exhausted = window === "all" || items.length < window;
+      if (hitLimit || reachedSince || exhausted) break;
     }
 
     return ok(JSON.stringify({
@@ -1632,14 +1593,12 @@ addTool("list_people",
     project: z.string().optional().describe("Project ID or name (omit for all account members)"),
     all: z.boolean().optional().describe("Fetch all results; sets page.has_more=false"),
     limit: z.number().int().optional().describe("Max results"),
-    page: z.number().int().optional().describe("Page number"),
   },
-  async ({ project, all, limit, page }) => {
+  async ({ project, all, limit }) => {
     const args = ["people", "list"];
     if (project) args.push("--project", project);
     if (all) args.push("--all");
     else if (limit != null) args.push("--limit", String(limit));
-    if (page != null) args.push("--page", String(page));
     // CLI's own no-limit default is "fetch all" (0 = all), not a capped page.
     return ok(wrapPaginated(await runBasecamp(args), { all: all || limit == null, limit }));
   }
@@ -1679,7 +1638,7 @@ addTool("get_project_overview",
       : `## ${title}\n\n_Error: ${result.reason?.stderr?.trim() || result.reason?.stdout?.trim() || result.reason?.message}_`;
 
     return ok([
-      section("Open Todos", todos),
+      section(todo_status === "completed" ? "Completed Todos" : "Open Todos", todos),
       section("Messages", messages),
       section("Cards", cards),
     ].join("\n\n---\n\n"));
