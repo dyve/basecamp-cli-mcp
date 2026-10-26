@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Verified correct, not a bug (maintenance pass, CLI v0.18.0 → v0.18.1 — both commits read, cached-read paths live-tested in Sandbox)
+
+- v0.18.1 only bumps basecamp-sdk v0.28.0 → v0.28.1, which makes every typed GET revalidate against the CLI's ETag cache (`If-None-Match`, a 304 served from the cached body). Before, only the raw path and pages 2+ did. Three things could have broken here, and none did:
+  - **Totals after a 304.** `has_more`/`total` read the CLI's "Showing X of Y" notice, built from `X-Total-Count`. Repeated `list_messages` and `list_projects` calls, the second answered from cache, kept `total: 2` and `total: 132`.
+  - **Stale reads after a write.** Every GET still goes to the server, so a cache hit happens only when nothing changed. In Sandbox, `show_todo` right after `update_todo` and `complete_todos` returned the new title and `completed: true`.
+  - **Parallel processes sharing one cache directory.** The SDK now writes each entry as one file renamed into place, fixing an ETag/body mismatch between concurrent writers that could serve an old body indefinitely. An 8-way `search` across projects, run twice, gave identical results with no warnings.
+- No flags, commands or response shapes changed. New cache entries use `~/.cache/basecamp/responses/*.entry`; the old `*.body` files read as misses and are left in place.
+
+### Changed (CLI v0.18.1)
+
+- README floor set to v0.18.1, the version verified against. Nothing here requires it; v0.18.0 behaves the same apart from the cache.
+- `@modelcontextprotocol/sdk` 1.32.1 → 1.32.2 (patch). `zod` 4 is available but stays on 3.25: a major bump gets its own branch.
+
 ### Fixed (full-code review, CLI v0.18.0 — every finding reproduced live or with a stub CLI, writes tested in Sandbox and cleaned up)
 
 - **Paging advice led to calls the CLI refuses.** Every list tool said "increment the page param", but on v0.18.0 nearly every list command refuses `--page` above 1 ("only --page 1 is supported; use --all") and `--page` with `--limit`. Measured on 16 commands: only account-wide `todos list` and `notifications list` still page. `page` is removed from the twelve tools where it could not work. `list_todos` keeps it account-wide only and refuses it otherwise. `next_page` now says to pass `all=true`. `has_more` now reads the CLI's own notice: "Showing 1 of 68" gives `has_more: true, total: 68`, and "more may exist" gives `true`.
