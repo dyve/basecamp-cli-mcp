@@ -65,7 +65,7 @@ Wraps `recordings list --type TYPE`. Unlike `search`, it is exhaustive for a giv
 
 ### 4. Bulk operations with partial-success shape
 
-`move_cards`, `complete_todos`, `reopen_todos`, `assign_todos`, and `mark_notifications_read` accept arrays and run in parallel via `Promise.allSettled`. Each returns `{ succeeded: [ids], failed: [{ id, reason, retryable }] }`. `retryable` is the CLI's own classification (see **Errors** below), so an agent can re-run only the transient failures.
+`move_cards`, `complete_todos`, `reopen_todos`, `assign_todos`, and `mark_notifications_read` accept arrays and run in parallel via `Promise.allSettled`. Each returns `{ succeeded: [ids], failed: [{ id, reason, retryable, hint? }] }`. `retryable` is the CLI's own classification (see **Errors** below), so an agent can re-run only the transient failures.
 
 `assign_todos` accepts a per-item shape `{ id, assignee_ids[], due_date? }` so each todo can have independent assignees and an optional due date update in one call.
 
@@ -132,7 +132,7 @@ Single file: `src/index.js`. All tools registered with `addTool(name, descriptio
 
 **Rich text:** since CLI v0.12.0 every rich-text field is read as Markdown unless `--format html` is passed — HTML is no longer detected and passed through. The ten tools that send a body or description take an optional `format: "markdown" | "html"`. An agent writing back an HTML body it read from a show tool must pass `format: "html"`, or Markdown syntax inside it is reinterpreted (indented lines become code blocks, `# x` a heading). Chat posts are plain text and take no format. Since CLI v0.16.0 a URL alone on its own line in Markdown becomes an embed (video, chart) when Basecamp can embed it; put a URL inside a sentence to keep it a plain link.
 
-**Errors:** the CLI prints its error envelope — `{ ok: false, error, code, retryable, meta: { request_id } }` — to **stdout**, not stderr, and exits with the code matching `code`. Tool errors are returned as `Basecamp error [<code>/exit <n>]: <message>`, with a remediation hint and the request ID where available; the label gains `, retryable` when the CLI classifies the failure as transient. `retryable: false` means no known reason a retry would help, not proof the failure is permanent — so it is never printed. (`retryable` is CLI v0.10.0+.)
+**Errors:** the CLI prints its error envelope — `{ ok: false, error, code, retryable, hint?, meta: { request_id } }` — to **stdout**, not stderr, and exits with the code matching `code`. Tool errors are returned as `Basecamp error [<code>/exit <n>]: <message>`, followed by our remediation hint for the code, then the CLI's own `hint` (often the exact recovery command), and the request ID where available; bulk tools put the CLI's hint in `failed[].hint`; the label gains `, retryable` when the CLI classifies the failure as transient. `retryable: false` means no known reason a retry would help, not proof the failure is permanent — so it is never printed. (`retryable` is CLI v0.10.0+.)
 
 | Exit | Code | Meaning |
 | ---- | ---- | ------- |

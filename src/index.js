@@ -65,8 +65,8 @@ const EXIT_CODE_HINTS = {
   limit_exceeded: "an account limit was reached (HTTP 507); the request cannot be retried as-is",
 };
 
-// Parses a failed CLI invocation into { code, exit, message, request_id, retryable }.
-// On any error the CLI prints its envelope — { ok: false, error, code, retryable, meta: { request_id } } —
+// Parses a failed CLI invocation into { code, exit, message, hint, request_id, retryable }.
+// On any error the CLI prints its envelope — { ok: false, error, code, retryable, hint?, meta: { request_id } } —
 // to stdout, not stderr, and exits with the code matching `code`. Process-level failures
 // (missing binary, timeout) have no envelope; Node reports those in `e.code` as a string.
 // `retryable` is the CLI's own classification (CLI v0.10.0+, basecamp-cli#665): true for 5xx,
@@ -83,6 +83,7 @@ function describeCliError(e) {
       code: envelope.code ?? EXIT_CODE_NAMES[exit] ?? "unknown",
       exit,
       message: envelope.error ?? "unknown error",
+      hint: envelope.hint ?? null,
       request_id: envelope.meta?.request_id ?? null,
       retryable: typeof envelope.retryable === "boolean" ? envelope.retryable : null,
     };
@@ -91,6 +92,7 @@ function describeCliError(e) {
     code: EXIT_CODE_NAMES[exit] ?? (typeof e?.code === "string" ? e.code : "unknown"),
     exit,
     message: e?.stderr?.trim() || out || e?.message || String(e),
+    hint: null,
     request_id: null,
     retryable: null,
   };
@@ -98,9 +100,10 @@ function describeCliError(e) {
 
 // One-line rendering of describeCliError, for tool errors and per-project warnings.
 // Only a positive retryable is shown: "not retryable" would overstate what false means.
+// The CLI's own hint names the command that recovers (e.g. after a dropped assignee) and follows ours.
 function formatCliError(e) {
-  const { code, exit, message, request_id, retryable } = describeCliError(e);
-  const hint = EXIT_CODE_HINTS[code];
+  const { code, exit, message, hint: cliHint, request_id, retryable } = describeCliError(e);
+  const hint = [EXIT_CODE_HINTS[code], cliHint].filter(Boolean).join("; ");
   const label = (exit != null ? `${code}/exit ${exit}` : code) + (retryable === true ? ", retryable" : "");
   return `[${label}]: ${message}`
     + (hint ? ` — ${hint}` : "")
@@ -324,8 +327,8 @@ function collectResults(ids, settled) {
     if (r.status === "fulfilled") succeeded.push(ids[i]);
     else {
       // retryable lets an agent re-run just the transient failures; see describeCliError for its meaning.
-      const { message, retryable } = describeCliError(r.reason);
-      failed.push({ id: ids[i], reason: message, retryable });
+      const { message, hint, retryable } = describeCliError(r.reason);
+      failed.push({ id: ids[i], reason: message, retryable, ...(hint && { hint }) });
     }
   });
   return { succeeded, failed };
@@ -524,7 +527,7 @@ addTool("create_todo",
 
 addTool("complete_todos",
   "Mark one or more todos as complete in parallel. " +
-  "Returns { succeeded: [id, ...], failed: [{ id, reason, retryable }, ...] }.",
+  "Returns { succeeded: [id, ...], failed: [{ id, reason, retryable, hint? }, ...] }.",
   { ids: z.array(z.string()).min(1).describe("Todo ID(s) or Basecamp URL(s)") },
   async ({ ids }) => {
     const results = await Promise.allSettled(ids.map(id => runBasecamp(["todos", "complete", id])));
@@ -534,7 +537,7 @@ addTool("complete_todos",
 
 addTool("reopen_todos",
   "Uncomplete (reopen) one or more todos in parallel. " +
-  "Returns { succeeded: [id, ...], failed: [{ id, reason, retryable }, ...] }.",
+  "Returns { succeeded: [id, ...], failed: [{ id, reason, retryable, hint? }, ...] }.",
   { ids: z.array(z.string()).min(1).describe("Todo ID(s) or Basecamp URL(s)") },
   async ({ ids }) => {
     const results = await Promise.allSettled(ids.map(id => runBasecamp(["todos", "uncomplete", id])));
@@ -566,7 +569,7 @@ addTool("update_todo", "Update an existing todo (title, assignee, due date, desc
 
 addTool("assign_todos",
   "Assign one or more todos in parallel. Each entry specifies its own assignees (comma-separated names or IDs, or 'me') and an optional due date. " +
-  "Returns { succeeded: [id, ...], failed: [{ id, reason, retryable }, ...] }.",
+  "Returns { succeeded: [id, ...], failed: [{ id, reason, retryable, hint? }, ...] }.",
   {
     assignments: z.array(z.object({
       id: z.string().describe("Todo ID or Basecamp URL"),
@@ -785,7 +788,7 @@ addTool("move_card", "Move a single card to a different column, or to a differen
 
 addTool("move_cards",
   "Move multiple cards to columns in parallel. Each move specifies a card id and target column. " +
-  "Returns { succeeded: [id, ...], failed: [{ id, reason, retryable }, ...] } for partial-success visibility.",
+  "Returns { succeeded: [id, ...], failed: [{ id, reason, retryable, hint? }, ...] } for partial-success visibility.",
   {
     moves: z.array(z.object({
       id: z.string().describe("Card ID"),
@@ -1383,7 +1386,7 @@ addTool("list_notifications",
 
 addTool("mark_notifications_read",
   "Mark one or more notifications as read in parallel. " +
-  "Returns { succeeded: [id, ...], failed: [{ id, reason, retryable }, ...] }. " +
+  "Returns { succeeded: [id, ...], failed: [{ id, reason, retryable, hint? }, ...] }. " +
   "Use page to match the page you listed notifications from (all IDs must be from the same page).",
   {
     ids: z.array(z.string()).min(1).describe("Notification ID(s)"),
