@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Verified correct, not a bug (maintenance pass, CLI v0.18.1 → v0.19.0 — all 5 commits and the SDK range read, core tools smoke-tested)
+
+- v0.19.0 bumps basecamp-sdk v0.28.1 → v0.29.1 (v0.29.0 never published a Go module). The SDK's Go changes are confined to `eventfeed`, which now renews the live event stream in band before its token expires, and the CLI change adds logging of that renewal to its connector. This server never calls the connector or the event feed. MIGRATING.md has no v0.29 section. The other CLI commit is a sqlite dependency bump.
+- No flags, commands or response shapes changed. All 60 tools register; `list_projects` (total 132), `list_todos`, `search` and `show_project` return the expected shapes.
+
+### Changed (CLI v0.19.0)
+
+- README floor set to v0.19.0, the version verified against. Nothing here requires it.
+
 ### Verified correct, not a bug (maintenance pass, CLI v0.18.0 → v0.18.1 — both commits read, cached-read paths live-tested in Sandbox)
 
 - v0.18.1 only bumps basecamp-sdk v0.28.0 → v0.28.1, which makes every typed GET revalidate against the CLI's ETag cache (`If-None-Match`, a 304 served from the cached body). Before, only the raw path and pages 2+ did. Three things could have broken here, and none did:
