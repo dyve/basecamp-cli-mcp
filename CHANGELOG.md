@@ -4,6 +4,26 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed (maintenance pass, CLI v0.19.0 → v0.21.0 — all 12 commits and the SDK range read, every invocation's flags swept against `--help`, affected paths live-tested in Sandbox)
+
+- **The CLI's error hint was dropped.** The error envelope carries a `hint`, often the exact recovery command, and `describeCliError` ignored it. It matters more since v0.20.0 (basecamp-cli#981): a write whose assignee Basecamp drops (a column ID, someone outside the project) now saves the record and then fails with `usage`, and the hint says how to assign it. Tool errors now append the CLI's hint after ours, and bulk failures carry it as `failed[].hint`. Verified: `update_card` with a column ID as assignee, and `assign_todos` with one valid and one invalid ID, which saved the valid assignee and kept the description and due date.
+
+### Verified correct, not a bug (CLI v0.21.0)
+
+- **Dropped assignees now fail (basecamp-cli#981).** `create_card`, `update_card`, `create_todo`, `update_todo` and `assign_todos` used to report success while Basecamp silently skipped an invalid assignee, and `cards update` could clear a card's real assignees. They now return an error, which our tools surface. The record is still saved, and the error says so and lists the assignees it was saved with.
+- **Empty lists emit `"data": []` (basecamp-cli#979).** `todos list` with no to-dos used to omit `data`. `wrapPaginated` already read a missing `data` as empty, so `list_todos` on an empty project returned `count: 0, has_more: false` before and after.
+- **Moves and copies (basecamp-cli#973, #985).** `cards move` gained `--to-project` and `--to-card-table`, and move/copy commands now refuse container flags they don't read. `move_card` and `move_cards` still send `--to`, `--position`, `--on-hold`, `--to-wormhole`, `--project` and `--card-table`, all still accepted. Moved a Sandbox card between columns with `--project` through both tools. The response shape (`{ id, column, status: "moved" }`) is unchanged.
+- **Ping writes (basecamp-cli#970).** Basecamp now refuses generic recording writes on Campfire lines in a Ping. The CLI explains the 403 and names `chat delete`. This server only trashes through `recordings trash` in docs and tests, never on chat lines.
+- **SDK v0.29.1 → v0.32.0.** MIGRATING.md lists only additive changes for v0.30–v0.32: recording move, copy and filing operations, and project logos. A flag sweep of every tool's CLI invocations against live `--help` found nothing missing.
+
+### Not wired up (CLI v0.20.0–v0.21.0)
+
+- Cross-project move and copy for cards, to-dos, to-do lists, messages, Docs & Files, columns, schedule entries, check-in questions and forwards (`… move --to-project`, `… copy`), `filings show`, and `projects logo set/remove`. Under the retirement plan this server gets fixes only; all of these are in `basecamp mcp` (`basecamp_recordings` move/copy since v0.21.0). Reachable here through `basecamp_run`.
+
+### Changed (CLI v0.21.0)
+
+- README floor set to v0.21.0, the version verified against. Nothing here requires it.
+
 ### Verified correct, not a bug (maintenance pass, CLI v0.18.1 → v0.19.0 — all 5 commits and the SDK range read, core tools smoke-tested)
 
 - v0.19.0 bumps basecamp-sdk v0.28.1 → v0.29.1 (v0.29.0 never published a Go module). The SDK's Go changes are confined to `eventfeed`, which now renews the live event stream in band before its token expires, and the CLI change adds logging of that renewal to its connector. This server never calls the connector or the event feed. MIGRATING.md has no v0.29 section. The other CLI commit is a sqlite dependency bump.
