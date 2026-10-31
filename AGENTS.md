@@ -228,6 +228,13 @@ Since CLI v0.10.0 the CLI ships its own MCP server (`basecamp mcp`: 17 gateway t
 - [basecamp-cli#896](https://github.com/basecamp/basecamp-cli/issues/896) — rich text is stored as literal Markdown, no conversion. Blocker for agent-written content.
 - [basecamp-cli#897](https://github.com/basecamp/basecamp-cli/issues/897) — `next_page` never ends and the list shape varies. Not a blocker; agents can stop on an empty page.
 
+**Re-tested on CLI v0.22.0 (2026-10-31): all three still reproduce.** A title-only `replace_todo` cleared description, due date and assignees. A Markdown description was stored literally. `list_projects` over 132 projects gave pages of 15/30/50 as `{ results, next_page }`, the last page (37) as a bare array, and empty pages with an ever-increasing `next_page` after that. No maintainer has responded since filing. On 2026-10-31 each issue got a comment with a fix idea (no PR offered):
+- **#895:** the model already marks the six affected operations with `x-basecamp-write-semantics: { clearsOmitted: true }`, so the gateway could read, merge and write for all of them, as the SDK's merge-safe update does.
+- **#896:** mark rich-text fields in the model and run them through the CLI's Markdown conversion, with a `format` param.
+- **#897:** always return `{ results, next_page }`, with `next_page: null` when there is no `next` link.
+
+Re-check these issues for replies on each CLI maintenance pass.
+
 Until #895 and #896 close: use `basecamp mcp --read-only` for reads and this server for writes. **This server gets fixes only — no new tools.** New CLI surface (`files move`, `subtasks`, message categories) is already in the gateway; do not wire it up here. Other gaps found, accepted as the cost of adopting: IDs only (no names, URLs or `me`), no local file upload, no bulk partial-success shape, plain-text errors with no `code`/`retryable`, destructive actions (`trash_project`, deletes) sharing a tool — and so a Desktop "always allow" — with reads.
 
 When both blockers close: re-test them in Sandbox, drop `--read-only`, remove this server from the Desktop config, and archive the repo.
