@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Security (dependencies)
+
+- Closed all six open Dependabot alerts. `fast-uri` 3.1.9, `body-parser` 2.4.0 and `qs` 6.17.1 are lockfile-only patch updates of `@modelcontextprotocol/sdk` dependencies. `zod` 3.25 → 4.6.7 is the only fix for GHSA-mrhx-c7xc-m3w5 (memory exhaustion on oversized constrained collections). The SDK declares `zod ^3.25 || ^4.0`.
+- None was reachable in practice: the server speaks stdio to a local client, and `body-parser`/`qs` sit in the SDK's HTTP transport, which it never starts.
+
+### Verified correct, not a bug (zod 4)
+
+- `tools/list` diffed before and after across all 60 tools. Only two kinds of change: `additionalProperties: false` is no longer advertised, and integers carry safe-integer `minimum`/`maximum`. Zod 3 never enforced the former (unknown keys were stripped, not refused), and zod 4 still strips them: `list_projects` with a stale `page` argument works as before.
+- Runtime validation is unchanged apart from message wording: the blank-due-date refine, enums, integers, `min(1)`, required fields and nested arrays are all refused as before. `search`, `get_timeline`, `list_cards` and `list_projects` were exercised live.
+
 ### Verified correct, not a bug (maintenance pass, CLI v0.22.0 → v0.22.1 — both commits read, core tools smoke-tested)
 
 - v0.22.1 only scopes the Codex plugin probe in `setup` and `doctor` to the 37signals marketplace (basecamp-cli#995), in `internal/harness/codex.go`. It changes no commands, flags or responses this server uses. All 60 tools register; `list_projects` (total 132), `list_todos`, `search` and `show_project` return the expected shapes.
