@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Verified correct, not a bug (maintenance pass, CLI v0.22.0 → v0.22.1 — both commits read, core tools smoke-tested)
+
+- v0.22.1 only scopes the Codex plugin probe in `setup` and `doctor` to the 37signals marketplace (basecamp-cli#995), in `internal/harness/codex.go`. It changes no commands, flags or responses this server uses. All 60 tools register; `list_projects` (total 132), `list_todos`, `search` and `show_project` return the expected shapes.
+- basecamp-cli#895, #896 and #897 have no maintainer reply since the 2026-10-31 comments.
+
+### Changed (CLI v0.22.1)
+
+- README floor set to v0.22.1, the version verified against. Nothing here requires it.
+
 ### Verified correct, not a bug (maintenance pass, CLI v0.21.0 → v0.22.0 — all 4 commits and the SDK range read, every invocation's flags swept against `--help`, core tools smoke-tested)
 
 - v0.22.0 only adds commands: `timesheet entry create/show/update/delete` (basecamp-cli#982), and `hillcharts updates` / `hillcharts updates show` / `hillcharts update --dot --note --notify` (#990, #991). The CLI's `.surface` file gains 258 lines and loses none. No tool calls `timesheet` or `hillcharts` directly; `basecamp_run ["timesheet", "report", …]` still works.
