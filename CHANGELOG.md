@@ -4,6 +4,25 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Verified correct, not a bug (maintenance pass, CLI v0.22.1 → v0.26.0 — all 17 commits and the SDK range read, every invocation's flags swept against `--help`, affected paths live-tested in Sandbox)
+
+- **`show` rewritten for item URLs (basecamp-cli#1017).** `delete_step`'s guard reads the recording type with `show <id>`. It still gets `Kanban::Card` for a card and `Kanban::Step` for a step: given a card ID it refused and the card stayed active, and given a step ID it deleted the step.
+- **Card URLs in the step tools.** `url parse` still resolves a card's `app.basecamp.com`, `3.basecamp.com`, API `.json`, mixed-case and `/edit` links, and `list_steps`/`create_step` accept them. A `#__recording_` fragment and a malformed ID are refused by our check, as before. A `/comments/<id>` link is now refused by `url parse` itself ("Could not parse URL"), before our check runs. It is still refused, with the CLI's message instead of ours.
+- **Rich-text spacing (#1000)** changes only the skill's guidance: leave a blank line between blocks. The Markdown conversion is unchanged.
+- **Keyring (#1006, #1011)**: patient reads and an outage ride-through for Linux keyrings. Our token single-flight runs `auth token` on macOS and is unaffected.
+- **Agent instructions (#1001, #1009, #1014)**: a new `basecamp instructions` command and Claude Code session hooks print an operator-linked writing guide. No other command's output changes. None is set on this account (`basecamp instructions`: "none are set").
+- **Doors and Campfire connector (#1003, #1022)** add surface this server doesn't use. basecamp-sdk v0.34.0 → v0.35.0 only adds the Doors service (MIGRATING.md).
+- The flag sweep found nothing missing (only its known false positives). All 60 tools register, and `list_projects`, `search` and `list_messages` return the expected shapes.
+- basecamp-cli#895, #896 and #897 have no maintainer reply since the 2026-10-31 comments.
+
+### Not wired up (CLI v0.23.0–v0.26.0)
+
+- `doors` (a project's external links) and `basecamp instructions`. Under the retirement plan this server gets fixes only. Both are reachable through `basecamp_run`.
+
+### Changed (CLI v0.26.0)
+
+- README floor set to v0.26.0, the version verified against. Nothing here requires it.
+
 ### Security (dependencies)
 
 - Closed all six open Dependabot alerts. `fast-uri` 3.1.9, `body-parser` 2.4.0 and `qs` 6.17.1 are lockfile-only patch updates of `@modelcontextprotocol/sdk` dependencies. `zod` 3.25 → 4.6.7 is the only fix for GHSA-mrhx-c7xc-m3w5 (memory exhaustion on oversized constrained collections). The SDK declares `zod ^3.25 || ^4.0`.
