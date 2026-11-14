@@ -4,6 +4,29 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Verified correct, not a bug (maintenance pass, CLI v0.26.0 → v0.30.0 — all 15 commits and the SDK range read, every invocation's flags swept against `--help`, affected paths live-tested in Sandbox)
+
+- **Assignment notifications (basecamp-cli#1034).** Basecamp tells a newly assigned person only when the request sends `notify: true`. `--notify` is now on `todos create`, `todos update`, `cards create`, `cards update` and `assign`. This server sends it nowhere, so assignments made here notify nobody (card steps excepted), as before. That is unchanged behavior, not a regression; see the open question in this pass's PR.
+- **`cards create --assignee` now assigns on the create request.** `create_card` has no assignee parameter, so it is unaffected. Assigning through `update_card` still works, and an invalid assignee still errors after saving, with the card left unassigned.
+- **Markdown `<details>` folds (#1024)** are now kept instead of escaped. Verified with `add_comment`: a fold written in Markdown arrived as `<details><summary>`. AGENTS.md's rich-text note says so.
+- **Config trust (63dbd8f)** now binds approval to the trusted settings' digest, and ignores old path-only approvals until they are trusted again. This account has no recorded approvals (`basecamp config trust --list`), so nothing changes here.
+- **`basecamp feedback` (#1021)**: on a failed command the CLI now adds a line suggesting it, on stderr only. stdout is still one JSON envelope, which `describeCliError` reads.
+- Connector changes (#1026, #1035, #1039, #1040), the Go toolchain bump, and the release-PR workflow do not touch commands this server calls. basecamp-sdk v0.35.0 → v0.36.0 adds `notify` to card updates and `assignee_ids` to card creates.
+- The flag sweep found nothing missing (only its known false positives). All 60 tools register.
+- basecamp-cli#895, #896 and #897 have no maintainer reply since the 2026-10-31 comments.
+
+### Security (dependencies)
+
+- `hono` 4.13.18 and `@hono/node-server` 2.1.8 (GHSA-qv5m-9pm6-hqp3, GHSA-jpvv-r467-5p4w): lockfile-only patch updates in the MCP SDK's HTTP transport, which this stdio server never starts.
+
+### Not wired up (CLI v0.27.0–v0.30.0)
+
+- `basecamp feedback` and the connector's new commands. Under the retirement plan this server gets fixes only.
+
+### Changed (CLI v0.30.0)
+
+- README floor set to v0.30.0, the version verified against. Nothing here requires it.
+
 ### Verified correct, not a bug (maintenance pass, CLI v0.22.1 → v0.26.0 — all 17 commits and the SDK range read, every invocation's flags swept against `--help`, affected paths live-tested in Sandbox)
 
 - **`show` rewritten for item URLs (basecamp-cli#1017).** `delete_step`'s guard reads the recording type with `show <id>`. It still gets `Kanban::Card` for a card and `Kanban::Step` for a step: given a card ID it refused and the card stayed active, and given a step ID it deleted the step.
